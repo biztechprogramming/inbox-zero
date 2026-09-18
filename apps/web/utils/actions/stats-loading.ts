@@ -200,12 +200,18 @@ export async function saveBatch({
         fromName: extractNameFromEmail(m.headers.from),
         fromDomain: extractDomainFromEmail(m.headers.from),
         to: m.headers.to ? extractEmailAddress(m.headers.to) : "Missing",
+        cc: m.headers.cc ?? null,
         date,
         unsubscribeLink,
         read: !m.labelIds?.includes("UNREAD"),
         sent: !!m.labelIds?.includes("SENT"),
         draft: !!m.labelIds?.includes("DRAFT"),
         inbox: !!m.labelIds?.includes("INBOX"),
+        subject: m.subject ?? null,
+        snippet: m.snippet ?? null,
+        hasAttachments: (m.attachments?.length ?? 0) > 0,
+        labels: m.labelIds ?? [],
+        isReply: !!m.headers["in-reply-to"],
         emailAccountId,
       };
     })
@@ -231,12 +237,18 @@ async function saveEmailMessages(
     fromName: string;
     fromDomain: string;
     to: string;
+    cc: string | null;
     date: Date;
     unsubscribeLink: string | null | undefined;
     read: boolean;
     sent: boolean;
     draft: boolean;
     inbox: boolean;
+    subject: string | null;
+    snippet: string | null;
+    hasAttachments: boolean;
+    labels: string[];
+    isReply: boolean;
     emailAccountId: string;
   }[],
 ) {
@@ -253,11 +265,18 @@ async function saveEmailMessages(
       ${email.fromName}::text,
       ${email.fromDomain}::text,
       ${email.to}::text,
+      ${email.cc}::text,
       ${email.unsubscribeLink}::text,
       ${email.read}::boolean,
       ${email.sent}::boolean,
       ${email.draft}::boolean,
       ${email.inbox}::boolean,
+      ${email.subject}::text,
+      ${email.snippet}::text,
+      ${email.hasAttachments}::boolean,
+      ${email.labels}::text[],
+      ${email.isReply}::boolean,
+      to_tsvector('english', coalesce(${email.subject}::text, '') || ' ' || coalesce(${email.snippet}::text, '')),
       NOW(),
       NOW()
     )`,
@@ -274,11 +293,18 @@ async function saveEmailMessages(
       "fromName",
       "fromDomain",
       "to",
+      "cc",
       "unsubscribeLink",
       "read",
       "sent",
       "draft",
       "inbox",
+      "subject",
+      "snippet",
+      "hasAttachments",
+      "labels",
+      "isReply",
+      "searchVector",
       "createdAt",
       "updatedAt"
     )
@@ -289,11 +315,18 @@ async function saveEmailMessages(
       "fromName" = EXCLUDED."fromName",
       "fromDomain" = EXCLUDED."fromDomain",
       "to" = EXCLUDED."to",
+      "cc" = EXCLUDED."cc",
       "unsubscribeLink" = EXCLUDED."unsubscribeLink",
       "read" = EXCLUDED."read",
       "sent" = EXCLUDED."sent",
       "draft" = EXCLUDED."draft",
       "inbox" = EXCLUDED."inbox",
+      "subject" = EXCLUDED."subject",
+      "snippet" = EXCLUDED."snippet",
+      "hasAttachments" = EXCLUDED."hasAttachments",
+      "labels" = EXCLUDED."labels",
+      "isReply" = EXCLUDED."isReply",
+      "searchVector" = EXCLUDED."searchVector",
       "updatedAt" = NOW()
   `;
 }

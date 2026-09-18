@@ -1083,11 +1083,18 @@ model EmailMessage {
   fromName        String? // sender's display name
   fromDomain      String
   to              String
+  cc              String?
   unsubscribeLink String?
   read            Boolean
   sent            Boolean
   draft           Boolean
   inbox           Boolean
+  subject         String?
+  snippet         String?
+  hasAttachments  Boolean  @default(false)
+  labels          String[]
+  isReply         Boolean  @default(false)
+  searchVector    Unsupported("tsvector")?
 
   emailAccountId String
   emailAccount   EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
@@ -1097,6 +1104,8 @@ model EmailMessage {
   @@index([emailAccountId, date])
   @@index([emailAccountId, from])
   @@index([emailAccountId, fromName])
+  @@index([labels], type: Gin)
+  @@index([searchVector], type: Gin)
 }
 
 model ResponseTime {
