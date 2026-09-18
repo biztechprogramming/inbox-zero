@@ -1073,9 +1073,9 @@ model ColdEmail {
 }
 
 model EmailMessage {
-  id              String   @id @default(cuid())
-  createdAt       DateTime @default(now())
-  updatedAt       DateTime @updatedAt
+  id              String                   @id @default(cuid())
+  createdAt       DateTime                 @default(now())
+  updatedAt       DateTime                 @updatedAt
   threadId        String
   messageId       String
   date            DateTime // date of the email
@@ -1091,10 +1091,21 @@ model EmailMessage {
   inbox           Boolean
   subject         String?
   snippet         String?
-  hasAttachments  Boolean  @default(false)
+  hasAttachments  Boolean                  @default(false)
   labels          String[]
-  isReply         Boolean  @default(false)
+  isReply         Boolean                  @default(false)
+  externalUrl     String? // provider deeplink (Outlook webLink); Gmail has none
   searchVector    Unsupported("tsvector")?
+
+  // Computed at sync time for inbox messages so the assistant can answer from
+  // metadata instead of refetching and reading full bodies.
+  aiSummary  String?
+  aiCategory String?
+  aiUrgency  Int?                         @db.SmallInt
+  // The ivfflat index on `embedding` lives only in the migration SQL: Prisma has
+  // no `@@index` type for it. Check that `prisma migrate dev` has not generated a
+  // DROP for `EmailMessage_embedding_idx` before committing a new migration.
+  embedding  Unsupported("vector(1536)")?
 
   emailAccountId String
   emailAccount   EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)

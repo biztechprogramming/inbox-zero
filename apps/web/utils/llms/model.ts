@@ -596,6 +596,112 @@ function getCliProviderAvailability(provider: string) {
   }
 }
 
+// Providers serving a text embedding model at the 1536 dimensions
+// `EmailMessage.embedding` is declared with. A provider absent from this map is
+// skipped when walking the configured order, not treated as a failure.
+const EMBEDDING_MODEL_ID_BY_PROVIDER: Record<string, string> = {
+  [Provider.OPEN_AI]: "text-embedding-3-small",
+  // Azure addresses a deployment rather than a model; this is the conventional
+  // deployment name for it.
+  [Provider.AZURE]: "text-embedding-3-small",
+  [Provider.AZURE_FOUNDRY]: "text-embedding-3-small",
+  [Provider.AI_GATEWAY]: "openai/text-embedding-3-small",
+};
+
+// Embedding a mailbox is bulk work, so it follows the economy role and the same
+// role fallback every economy caller gets.
+const EMBEDDING_MODEL_TYPE: ModelType = "economy";
+
+/**
+ * Resolves the model used to embed emails for semantic search, following the
+ * deployment's own configured provider order.
+ *
+ * The user's chosen provider is tried first, exactly as `selectUserModel` does,
+ * then the entries of the configured model list for the economy role and its
+ * role fallbacks, in the order the operator declared them. Providers with no
+ * 1536-dimension embedding model are skipped, so a deployment whose primary
+ * chat provider cannot embed still gets embeddings from the next entry it
+ * already configured.
+ *
+ * Returns `null` when no configured provider can embed, which leaves keyword
+ * search intact.
+ */
+export function getEmbeddingModel(userAi: UserAIFields) {
+  for (const { provider, aiApiKey } of getEmbeddingProviderCandidates(userAi)) {
+    const apiKey = resolveApiKey(aiApiKey, getProviderApiKey(provider));
+    const model = createEmbeddingModel(provider, apiKey);
+    if (model) return model;
+
+    logger.warn("Skipping LLM list provider without an embedding model", {
+      provider,
+    });
+  }
+
+  return null;
+}
+
+function* getEmbeddingProviderCandidates(userAi: UserAIFields) {
+  if (userAi.aiProvider) {
+    yield { provider: userAi.aiProvider, aiApiKey: userAi.aiApiKey };
+  }
+
+  const modelTypes = [
+    EMBEDDING_MODEL_TYPE,
+    ...getDeploymentModelFallbackTypes(EMBEDDING_MODEL_TYPE),
+  ];
+
+  for (const modelType of modelTypes) {
+    const modelListConfig = getConfiguredModelListByType(modelType);
+    if (!modelListConfig) continue;
+
+    for (const entry of parseModelListConfig(modelListConfig)) {
+      if (!isSupportedProvider(entry.provider)) continue;
+      yield { provider: entry.provider, aiApiKey: null };
+    }
+  }
+}
+
+function createEmbeddingModel(provider: string, apiKey: string | undefined) {
+  const modelId = EMBEDDING_MODEL_ID_BY_PROVIDER[provider];
+  if (!modelId || !apiKey) return null;
+
+  switch (provider) {
+    case Provider.OPEN_AI:
+      return createOpenAI({ apiKey }).textEmbeddingModel(modelId);
+    case Provider.AZURE: {
+      const resourceName = env.AZURE_RESOURCE_NAME;
+      if (!resourceName) return null;
+
+      return createAzure({
+        apiKey,
+        resourceName,
+        apiVersion: env.AZURE_API_VERSION,
+      }).textEmbeddingModel(modelId);
+    }
+    case Provider.AZURE_FOUNDRY: {
+      const baseURL =
+        env.AZURE_FOUNDRY_BASE_URL || process.env.AZURE_FOUNDRY_BASE_URL;
+      if (!baseURL) return null;
+
+      return createOpenAICompatible({
+        name: "azure-foundry",
+        baseURL,
+        headers: { "api-key": apiKey },
+      }).textEmbeddingModel(modelId);
+    }
+    case Provider.AI_GATEWAY:
+      return createGateway({
+        apiKey,
+        headers: {
+          "http-referer": "https://www.getinboxzero.com",
+          "x-title": "Inbox Zero",
+        },
+      }).textEmbeddingModel(modelId);
+    default:
+      return null;
+  }
+}
+
 function resolveApiKey(
   aiApiKey: string | null | undefined,
   providerApiKey: string | undefined,

@@ -2,7 +2,7 @@ name: inbox-zero-dev
 
 services:
   db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16 # postgres 16 + the vector extension EmailMessage.embedding needs
     container_name: inbox-zero-dev-db
     environment:
       - POSTGRES_USER=${POSTGRES_USER:-postgres}

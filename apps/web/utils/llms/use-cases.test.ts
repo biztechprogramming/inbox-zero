@@ -127,6 +127,7 @@ describe("LLM use cases", () => {
       [LlmUseCase.DraftFollowUp]: "draft",
       [LlmUseCase.DraftReply]: "draft",
       [LlmUseCase.EmailHistoryExtraction]: "economy",
+      [LlmUseCase.EmailMessageEnrichment]: "economy",
       [LlmUseCase.EmailReportActionableRecommendations]: "default",
       [LlmUseCase.EmailReportEmailBehavior]: "economy",
       [LlmUseCase.EmailReportExecutiveSummary]: "default",

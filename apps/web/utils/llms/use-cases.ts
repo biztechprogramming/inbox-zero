@@ -18,6 +18,7 @@ export const LlmUseCase = {
   DraftFollowUp: "draft-follow-up",
   DraftReply: "draft-reply",
   EmailHistoryExtraction: "email-history-extraction",
+  EmailMessageEnrichment: "email-message-enrichment",
   EmailReportActionableRecommendations:
     "email-report-actionable-recommendations",
   EmailReportEmailBehavior: "email-report-email-behavior",
@@ -68,6 +69,7 @@ export const LLM_USE_CASE_MODEL_TYPES = {
   [LlmUseCase.DraftFollowUp]: "draft",
   [LlmUseCase.DraftReply]: "draft",
   [LlmUseCase.EmailHistoryExtraction]: "economy",
+  [LlmUseCase.EmailMessageEnrichment]: "economy",
   [LlmUseCase.EmailReportActionableRecommendations]: "default",
   [LlmUseCase.EmailReportEmailBehavior]: "economy",
   [LlmUseCase.EmailReportExecutiveSummary]: "default",

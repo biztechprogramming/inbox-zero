@@ -32,6 +32,7 @@ import {
   readEmailTool,
   replyEmailTool,
   searchInboxTool,
+  semanticSearchTool,
   sendEmailTool,
   startSenderCategorizationTool,
 } from "./chat-inbox-tools";
@@ -264,6 +265,7 @@ export async function aiProcessAssistantChat({
       getSenderCategorizationStatusTool(toolOptions),
     manageSenderCategory: manageSenderCategoryTool(toolOptions),
     searchInbox: searchInboxTool(toolOptions),
+    semanticSearch: semanticSearchTool(toolOptions),
     readEmail: readEmailTool(toolOptions),
     manageInbox: manageInboxTool(toolOptions),
     getUserRulesAndSettings: getUserRulesAndSettingsTool(toolOptions),

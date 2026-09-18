@@ -1,7 +1,7 @@
 name: inbox-zero-services
 services:
   db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16 # postgres 16 + the vector extension EmailMessage.embedding needs
     restart: always
     # container_name: inbox-zero
     env_file:

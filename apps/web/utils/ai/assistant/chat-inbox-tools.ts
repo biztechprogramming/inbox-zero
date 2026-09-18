@@ -54,6 +54,15 @@ import {
   isRetryableError as isGmailRetryableError,
 } from "@/utils/gmail/retry";
 import { microsoftGraphPageTokenSchema } from "@/utils/outlook/page-token";
+import {
+  buildOutlookFiltersForDb,
+  type DbSearchFilters,
+  type DbSearchRow,
+  parseGmailQueryForDb,
+  searchEmailMessages,
+  semanticSearchEmailMessages,
+} from "@/utils/ai/assistant/search-inbox-db";
+import { embedQuery } from "@/utils/email-message/enrich-messages";
 import { validateUserAndAiAccess } from "@/utils/user/validate";
 import { SafeError } from "@/utils/error";
 
@@ -556,12 +565,24 @@ const gmailSearchInboxTool = ({
 }: InboxToolOptions) =>
   tool({
     description:
-      "Search inbox messages and return concise message metadata. Returns at most 20 messages per call. If hasMore=true, more matches remain; for bulk or all-matching requests, keep calling searchInbox with nextPageToken until hasMore=false before reporting completion. totalReturned is only the number of messages returned by this call, so do not present it or a single search page as an exact mailbox, folder, or label count. If the tool returns an error or provider search feedback instead of messages, treat the lookup as inconclusive rather than evidence that the email is absent.",
+      "Search inbox messages and return concise message metadata. Returns at most 20 messages per call. If hasMore=true, more matches remain; for bulk or all-matching requests, keep calling searchInbox with nextPageToken until hasMore=false before reporting completion. totalReturned is only the number of messages returned by this call, so do not present it or a single search page as an exact mailbox, folder, or label count. If the tool returns an error or provider search feedback instead of messages, treat the lookup as inconclusive rather than evidence that the email is absent. Messages synced with enrichment also carry aiSummary (a one-line description), contentType (newsletter, transactional, personal, or work) and urgency (1-5); when aiSummary already answers the question, use it instead of calling readEmail.",
     inputSchema: gmailSearchInboxInputSchema,
     execute: async (input) => {
       trackToolCall({ tool: "search_inbox", email, logger });
 
       const { query, limit, pageToken } = input;
+      const maxResults = limit ?? SEARCH_INBOX_MAX_RESULTS;
+
+      const localResult = await searchInboxFromDb({
+        emailAccountId,
+        queryUsed: query,
+        filters: parseGmailQueryForDb(query),
+        limit: maxResults,
+        pageToken,
+        taxonomyNamesKey: "labelNames",
+        logger,
+      });
+      if (localResult) return localResult;
 
       try {
         const emailProvider = await createEmailProvider({
@@ -573,7 +594,7 @@ const gmailSearchInboxTool = ({
         const [searchResult, labels] = await Promise.all([
           emailProvider.searchMessages({
             query,
-            maxResults: limit ?? SEARCH_INBOX_MAX_RESULTS,
+            maxResults,
             pageToken: pageToken ?? undefined,
           }),
           getLabelsForSearchResults({ emailProvider, logger }),
@@ -612,7 +633,7 @@ const outlookSearchInboxTool = ({
 }: InboxToolOptions) =>
   tool({
     description:
-      "Search inbox messages and return concise message metadata. Returns at most 20 messages per call. If hasMore=true, more matches remain; for bulk or all-matching requests, keep calling searchInbox with nextPageToken until hasMore=false before reporting completion, even when the current page has zero messages. Outlook filtered searches can return an empty page before later matching pages. totalReturned is only the number of messages returned by this call, so do not present it or a single search page as an exact mailbox, folder, or category count. If the tool returns an error or provider search feedback instead of messages, treat the lookup as inconclusive rather than evidence that the email is absent.",
+      "Search inbox messages and return concise message metadata. Returns at most 20 messages per call. If hasMore=true, more matches remain; for bulk or all-matching requests, keep calling searchInbox with nextPageToken until hasMore=false before reporting completion, even when the current page has zero messages. Outlook filtered searches can return an empty page before later matching pages. totalReturned is only the number of messages returned by this call, so do not present it or a single search page as an exact mailbox, folder, or category count. If the tool returns an error or provider search feedback instead of messages, treat the lookup as inconclusive rather than evidence that the email is absent. Messages synced with enrichment also carry aiSummary (a one-line description), contentType (newsletter, transactional, personal, or work) and urgency (1-5); when aiSummary already answers the question, use it instead of calling readEmail.",
     inputSchema: outlookSearchInboxInputSchema,
     execute: async (input) => {
       trackToolCall({ tool: "search_inbox", email, logger });
@@ -625,6 +646,22 @@ const outlookSearchInboxTool = ({
         readState,
         categoryName,
       } = input;
+
+      const localResult = await searchInboxFromDb({
+        emailAccountId,
+        queryUsed: query,
+        filters: buildOutlookFiltersForDb({
+          query,
+          fromEmail,
+          readState,
+          categoryName,
+        }),
+        limit: limit ?? SEARCH_INBOX_MAX_RESULTS,
+        pageToken,
+        taxonomyNamesKey: "categoryNames",
+        logger,
+      });
+      if (localResult) return localResult;
 
       try {
         const emailProvider = await createEmailProvider({
@@ -684,6 +721,88 @@ export const searchInboxTool = (options: InboxToolOptions) =>
 
 export type SearchInboxTool = InferUITool<ReturnType<typeof searchInboxTool>>;
 
+const semanticSearchInputSchema = z.object({
+  query: z
+    .string()
+    .trim()
+    .min(1)
+    .max(500)
+    .describe(
+      "A description, in the user's own words, of what the wanted emails are about.",
+    ),
+  limit: z
+    .number()
+    .int()
+    .default(SEARCH_INBOX_MAX_RESULTS)
+    .transform((value) =>
+      Math.min(Math.max(value, 1), SEARCH_INBOX_MAX_RESULTS),
+    )
+    .describe(
+      `Maximum number of messages to return, up to ${SEARCH_INBOX_MAX_RESULTS}. Larger values are clamped.`,
+    ),
+});
+
+export const semanticSearchTool = ({
+  email,
+  emailAccountId,
+  logger,
+}: InboxToolOptions) =>
+  tool({
+    description: `Find emails by meaning, ranked by how close they are to a description rather than by matching words. Use it when the user describes what an email was about instead of quoting it, or when searchInbox returned nothing for a paraphrased request. Prefer searchInbox whenever the user gives an exact sender, label, date range, or phrase, because those are matched exactly and this tool is not. Matching runs over each message's subject, preview, and sender only, so it cannot find something mentioned solely in a message body. Only messages already synced and indexed for this account are searchable, so an empty result means the lookup was inconclusive, not that the email is absent. Returns at most ${SEARCH_INBOX_MAX_RESULTS} messages ranked by similarity and does not paginate; do not present the count as a mailbox total. This does not change inbox state.`,
+    inputSchema: semanticSearchInputSchema,
+    execute: async ({ query, limit }) => {
+      trackToolCall({ tool: "semantic_search", email, logger });
+
+      try {
+        const [{ emailAccount }, labels] = await Promise.all([
+          validateUserAndAiAccess({ emailAccountId }),
+          prisma.label.findMany({
+            where: { emailAccountId },
+            select: { gmailLabelId: true, name: true },
+          }),
+        ]);
+
+        const embedding = await embedQuery({
+          query,
+          userAi: emailAccount.user,
+        });
+        if (!embedding) {
+          return {
+            queryUsed: query,
+            error: "Semantic search is not configured for this deployment",
+          };
+        }
+
+        const rows = await semanticSearchEmailMessages({
+          emailAccountId,
+          embedding,
+          limit: limit ?? SEARCH_INBOX_MAX_RESULTS,
+        });
+
+        const labelsById = createLabelLookupMap(
+          labels.map((label) => ({ id: label.gmailLabelId, name: label.name })),
+        );
+        const items = rows.map((row) =>
+          mapDbRowForSearchResult(row, labelsById, "labelNames"),
+        );
+
+        return {
+          queryUsed: query,
+          totalReturned: items.length,
+          summary: summarizeSearchResults(items),
+          messages: items,
+        };
+      } catch (error) {
+        logger.error("Semantic search failed", { error });
+        return { queryUsed: query, error: "Failed to search inbox by meaning" };
+      }
+    },
+  });
+
+export type SemanticSearchTool = InferUITool<
+  ReturnType<typeof semanticSearchTool>
+>;
+
 const readEmailInputSchema = z.object({
   messageId: z
     .string()
@@ -707,7 +826,7 @@ export const readEmailTool = ({
 }) =>
   tool({
     description:
-      "Read the full content of an email by message ID, up to 4000 characters with HTML converted to plain text. Use this whenever the user asks for the full text, body, or details of a specific email: locate the email with searchInbox first, then call this with the messageId from the search results. Search results only include short snippets, not the full content.",
+      "Read the full content of an email by message ID, up to 4000 characters with HTML converted to plain text. Use this whenever the user asks for the full text, body, or details of a specific email: locate the email with searchInbox first, then call this with the messageId from the search results. Search results only include a short snippet and, when available, a one-line aiSummary, not the full content.",
     inputSchema: readEmailInputSchema,
     execute: async ({ messageId }) => {
       trackToolCall({ tool: "read_email", email, logger });
@@ -2527,4 +2646,108 @@ async function extractAttachmentText(
   }
 
   return { text: "", truncated: false };
+}
+
+const DB_PAGE_TOKEN_PREFIX = "db:";
+
+/**
+ * Answers a Gmail search from the local EmailMessage mirror when the query maps
+ * cleanly onto stored columns, skipping the provider roundtrip entirely.
+ *
+ * Returns `null` to hand the search back to the provider: the query uses an
+ * operator the mirror cannot answer, the mirror has no match (the message may
+ * not be synced yet), or the query is resuming a provider page token. The
+ * mirror can trail the mailbox by a webhook delivery, which is accepted here
+ * because every write path now updates it as messages arrive.
+ */
+async function searchInboxFromDb({
+  emailAccountId,
+  queryUsed,
+  filters,
+  limit,
+  pageToken,
+  taxonomyNamesKey,
+  logger,
+}: {
+  emailAccountId: string;
+  queryUsed: string;
+  filters: DbSearchFilters | null;
+  limit: number;
+  pageToken?: string | null;
+  taxonomyNamesKey: "categoryNames" | "labelNames";
+  logger: Logger;
+}) {
+  const isDbPageToken = Boolean(pageToken?.startsWith(DB_PAGE_TOKEN_PREFIX));
+  if (pageToken && !isDbPageToken) return null;
+  if (!filters) return null;
+
+  const offset = pageToken
+    ? Number(pageToken.slice(DB_PAGE_TOKEN_PREFIX.length))
+    : 0;
+  if (!Number.isInteger(offset) || offset < 0) return null;
+
+  try {
+    const [rows, labels] = await Promise.all([
+      searchEmailMessages({ emailAccountId, filters, limit, offset }),
+      prisma.label.findMany({
+        where: { emailAccountId },
+        select: { gmailLabelId: true, name: true },
+      }),
+    ]);
+
+    // Only the first page may fall back; a later page has no provider token.
+    if (!rows.length && !isDbPageToken) return null;
+
+    const labelsById = createLabelLookupMap(
+      labels.map((label) => ({ id: label.gmailLabelId, name: label.name })),
+    );
+    const items = rows.map((row) =>
+      mapDbRowForSearchResult(row, labelsById, taxonomyNamesKey),
+    );
+    const hasMore = items.length === limit;
+
+    return {
+      queryUsed,
+      totalReturned: items.length,
+      nextPageToken: hasMore
+        ? `${DB_PAGE_TOKEN_PREFIX}${offset + limit}`
+        : undefined,
+      hasMore,
+      summary: summarizeSearchResults(items),
+      messages: items,
+    };
+  } catch (error) {
+    logger.warn("Local inbox search failed, falling back to provider", {
+      error,
+    });
+    return null;
+  }
+}
+
+function mapDbRowForSearchResult(
+  row: DbSearchRow,
+  labelsById: Map<string, string>,
+  taxonomyNamesKey: "categoryNames" | "labelNames",
+) {
+  const labelNames = row.labels.map(
+    (labelId) => labelsById.get(labelId.toLowerCase()) || labelId,
+  );
+
+  return {
+    messageId: row.messageId,
+    threadId: row.threadId,
+    externalUrl: row.externalUrl ?? undefined,
+    subject: row.subject ?? "",
+    from: row.from,
+    to: row.to,
+    snippet: row.snippet ?? "",
+    aiSummary: row.aiSummary ?? undefined,
+    contentType: row.aiCategory ?? undefined,
+    urgency: row.aiUrgency ?? undefined,
+    date: row.date.toISOString(),
+    [taxonomyNamesKey]: labelNames,
+    category: inferConversationCategory(labelNames),
+    isUnread: !row.read,
+    hasAttachments: row.hasAttachments,
+  };
 }

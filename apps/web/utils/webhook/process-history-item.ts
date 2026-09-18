@@ -25,6 +25,7 @@ import { captureException, SafeError } from "@/utils/error";
 import { logErrorWithDedupe } from "@/utils/log-error-with-dedupe";
 import { sendOtpPushNotification } from "@/utils/otp-push";
 import { internalDateToDate } from "@/utils/date";
+import { saveParsedMessages } from "@/utils/email-message/save-email-messages";
 
 export type SharedProcessHistoryOptions = {
   provider: EmailProvider;
@@ -80,6 +81,19 @@ export async function processHistoryItem(
 
     // Get threadId from message if not provided
     const actualThreadId = threadId || parsedMessage.threadId;
+
+    // Keep the local mirror current before any of the early returns below, so
+    // inbound, outbound and blocked messages are all searchable without waiting
+    // for the next stats load.
+    try {
+      await saveParsedMessages({
+        emailAccountId,
+        messages: [parsedMessage],
+        logger,
+      });
+    } catch (error) {
+      logger.error("Failed to mirror message to EmailMessage", { error });
+    }
 
     const hasExistingRule = actualThreadId
       ? await prisma.executedRule.findFirst({

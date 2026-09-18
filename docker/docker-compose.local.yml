@@ -35,7 +35,7 @@ services:
     restart: unless-stopped
 
   db:
-    image: postgres:16
+    image: pgvector/pgvector:pg16 # postgres 16 + the vector extension EmailMessage.embedding needs
     environment:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD: password
