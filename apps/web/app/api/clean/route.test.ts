@@ -57,6 +57,7 @@ vi.mock("@/utils/qstash", () => ({
 const mockAiClean = vi.fn();
 vi.mock("@/utils/ai/clean/ai-clean", () => ({
   aiClean: (...args: unknown[]) => mockAiClean(...args),
+  jevClean: async () => null,
 }));
 
 vi.mock("@/utils/ai/group/find-newsletters", () => ({

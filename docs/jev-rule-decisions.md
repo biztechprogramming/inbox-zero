@@ -99,6 +99,10 @@ No prompt or tool descriptions change. The new surface is the Jev question and o
 - [x] Put Jev in front of `aiCategorizeSender` (single sender, from the webhook): used when probability is at least 0.6 (`JEV_CATEGORY_CONFIDENCE`)
 - [x] Bulk sender categorization (`categorizeWithAi`): each sender left after the static rules goes to Jev one at a time, and only the unsure ones go to the `aiCategorizeSenders` LLM batch. At ~0.2 s per sender on local Kev, a 50-sender batch adds about 10 s.
 
+### Inbox Clean
+- [x] Add an eval for `aiClean` (`__tests__/eval/clean.test.ts`, 22 cases); GPT-5.6 Luna gets 22/22
+- [x] Put Jev in front of `aiClean`, keep-only: a "keep" with archive probability below 0.5 (`JEV_CLEAN_KEEP_BELOW`) skips the LLM, and anything leaning archive goes to the LLM
+
 ### Phase 3: rollout
 - [ ] Enable Jev for one account and watch the Jev and fallback ratio in logs
 - [ ] Confirm learned patterns still get created from Jev matches
@@ -170,4 +174,16 @@ Kev is confident only on simple threads: a single question, a plain FYI, automat
 | 0.80 | 6/19 | 0 |
 
 Kev's only mistakes: three receipt senders (Airbnb, Apple, Vercel) called Notification, at p = 0.44 to 0.48. A wrong category only affects grouping in Smart Categories and Bulk Archive, but 0.5 is too close to those errors, so 0.6 it is. Latency: median 210 ms (135 to 313 ms). The confirmation run at 0.6 passed all 19 cases.
+
+### 2026-09-28: Inbox Clean, Kev-4B, self-hosted
+
+22 cases of the mail the controller's static checks leave for AI, with default skips (keep emails needing a reply) plus 3 cases that keep receipts.
+
+| Kev rule | Decided by Kev | Wrongly archived | Wrongly kept |
+|---|---|---|---|
+| Both directions, confidence ≥ 0.5 | 22/22 | 3 | 0 |
+| Both directions, confidence ≥ 0.7 | 8/22 | 2 | 0 |
+| **Keep only, archive p < 0.5 (chosen)** | **8/22** | **0** | **0** |
+
+Kev's probabilities are squeezed (0.37 to 0.75), and its most confident archives include an invoice and a purchase receipt the user asked to keep, plus a colleague's handover. No threshold makes its archives safe. Every one of its "keep" answers was right, and wrongly keeping an email costs far less than wrongly archiving it, so Kev only decides keeps. Latency: median 193 ms. Confirmation run: 22/22 passed (8 by Kev, 14 to the LLM).
 

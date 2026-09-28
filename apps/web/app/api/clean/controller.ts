@@ -1,7 +1,7 @@
 import { z } from "zod";
 import type { CleanGmailBody } from "@/app/api/clean/gmail/route";
 import { CleanAction } from "@/generated/prisma/enums";
-import { aiClean } from "@/utils/ai/clean/ai-clean";
+import { aiClean, jevClean } from "@/utils/ai/clean/ai-clean";
 import { isNewsletterSender } from "@/utils/ai/group/find-newsletters";
 import { isMaybeReceipt, isReceipt } from "@/utils/ai/group/find-receipts";
 import { assertCleanerApiEnabled } from "@/utils/cleaner-feature";
@@ -198,13 +198,21 @@ export async function cleanThread({
     return;
   }
 
-  const aiResult = await aiClean({
-    emailAccount,
-    messageId: lastMessage.id,
-    messages: messages.map((m) => getEmailForLLM(m)),
-    instructions,
-    skips,
-  });
+  const messagesForLLM = messages.map((m) => getEmailForLLM(m));
+  const aiResult =
+    (await jevClean({
+      messages: messagesForLLM,
+      instructions,
+      skips,
+      logger,
+    })) ??
+    (await aiClean({
+      emailAccount,
+      messageId: lastMessage.id,
+      messages: messagesForLLM,
+      instructions,
+      skips,
+    }));
 
   await publish({ markDone: aiResult.archive });
 }
