@@ -93,8 +93,9 @@ No prompt or tool descriptions change. The new surface is the Jev question and o
 - [x] Set the default threshold from the eval results (0.4)
 
 ### Phase 2: other decisions
-- [ ] Put Jev in front of `aiIsColdEmail`
-- [ ] Put Jev in front of `determineConversationStatus`
+- [x] Put Jev in front of `aiIsColdEmail`: yes/no question, used when confidence is at least 0.7 in either direction (`JEV_COLD_EMAIL_CONFIDENCE`)
+- [x] Put Jev in front of `aiDetermineThreadStatus`: choice question, used when probability is at least 0.8 (`JEV_THREAD_STATUS_CONFIDENCE`). Skipped when the user has customised conversation rules.
+- [x] Move the shared HTTP call into `utils/llms/system-one.ts` (`askSystemOne`)
 - [ ] Decide whether to turn off `categorizeSender`
 
 ### Phase 3: rollout
@@ -134,3 +135,27 @@ EVAL_REPORT_PATH=/tmp/kev-report.md LLM_API_KEY=unused JEV_ENABLED=true \
 ```
 
 `LLM_API_KEY=unused` only satisfies the eval suite's provider check; `-t jev` runs no LLM tests.
+
+### 2026-09-28: Phase 2, Kev-4B, self-hosted
+
+**Cold email** (`__tests__/eval/cold-email.test.ts`, current prompt, 56 scored cases):
+
+| Confidence | Decided by Kev | Wrongly cold | Missed cold |
+|---|---|---|---|
+| 0.50 | 55/56 | 11 | 1 |
+| 0.60 | 42/56 | 1 | 1 |
+| 0.65 | 37/56 | 0 | 0 |
+| **0.70 (chosen)** | 30/56 | 0 | 0 |
+
+Kev's mistakes are genuine but unsolicited inbound mail (investors, journalists, applicants, prospects) called cold at p = 0.51 to 0.60. 0.70 leaves a margin, because wrongly marking an investor's email as cold is expensive. A confirmation run with GPT-5.6 Luna handling the fallbacks passed all 60 cases: Kev decided 28, all correct.
+
+**Thread status** (24 labelled threads from `__tests__/ai-regression/` and `__tests__/eval/determine-thread-status.test.ts`):
+
+| Threshold | Decided by Kev | Wrong |
+|---|---|---|
+| 0.50 | 13/24 | 1 |
+| 0.70 | 8/24 | 1 |
+| **0.80 (chosen)** | 6/24 | 0 |
+
+Kev is confident only on simple threads: a single question, a plain FYI, automated notifications. Multi-person threads and implied promises go to the LLM. Two of its errors came from tests that don't pass `userSentLastEmail`, which production does. 24 cases is a small sample.
+

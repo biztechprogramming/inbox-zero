@@ -8,6 +8,11 @@ import type { ConversationStatus } from "@/utils/reply-tracker/conversation-stat
 import { THREAD_STATUS_LATEST_MESSAGE_MAX_LENGTH } from "@/utils/reply-tracker/thread-status-context";
 import { SystemType } from "@/generated/prisma/enums";
 import { getRuleConfig } from "@/utils/rule/consts";
+import { askSystemOne } from "@/utils/llms/system-one";
+import type { Logger } from "@/utils/logger";
+
+// Minimum probability for the decision model's answer to be used without the LLM.
+const JEV_THREAD_STATUS_CONFIDENCE = 0.8;
 
 export async function aiDetermineThreadStatus({
   emailAccount,
@@ -96,14 +101,9 @@ Respond with a JSON object with:
 - status: One of TO_REPLY, AWAITING_REPLY, ${userSentLastEmail ? "" : "FYI, "}or ACTIONED
 - rationale: Brief one-line explanation for the decision`;
 
-  // Only include custom preferences when user has edited the default instructions
-  const customizedRules = conversationRules.filter((r) => {
-    if (!r.enabled || !r.instructions || !r.systemType) return false;
-    const defaultInstructions = getRuleConfig(r.systemType).instructions;
-    return r.instructions !== defaultInstructions;
-  });
-
-  const conversationPreferences = customizedRules
+  const conversationPreferences = getCustomizedConversationRules(
+    conversationRules,
+  )
     .map((r) => `${r.name}: ${r.instructions}`)
     .join("\n");
 
@@ -166,4 +166,85 @@ Based on the full thread context above, determine the current status of this thr
   });
 
   return aiResponse.object;
+}
+
+// Returns null when the caller should fall back to the LLM.
+export async function jevDetermineThreadStatus({
+  emailAccount,
+  threadMessages,
+  userSentLastEmail = false,
+  conversationRules = [],
+  logger,
+}: {
+  emailAccount: EmailAccountWithAI;
+  threadMessages: EmailForLLM[];
+  userSentLastEmail?: boolean;
+  conversationRules?: RuleWithActions[];
+  logger: Logger;
+}): Promise<{ status: ConversationStatus; rationale: string } | null> {
+  // Free-text preferences need the LLM's reading.
+  if (getCustomizedConversationRules(conversationRules).length) return null;
+
+  const criteria: Record<string, string> = {
+    [SystemType.TO_REPLY]:
+      "The user needs to reply: someone asked the user a question or requested something the user hasn't answered or delivered, or the user promised a follow-up they haven't sent yet.",
+    [SystemType.AWAITING_REPLY]:
+      "The user is waiting on someone else: the user asked a question or requested something that hasn't been answered or delivered yet, or someone else promised to do something and hasn't yet.",
+    [SystemType.ACTIONED]:
+      "The thread is complete: questions are answered, requests are fulfilled, or the user sent information and isn't waiting for anything.",
+  };
+  if (!userSentLastEmail) {
+    criteria[SystemType.FYI] =
+      "The user received information worth knowing that needs no response, and nothing is pending anywhere in the thread.";
+  }
+
+  const answers = await askSystemOne({
+    state: `${getUserInfoPrompt({ emailAccount })}
+
+Email thread (oldest to newest):
+<thread>
+${getEmailListPrompt({
+  messages: threadMessages,
+  messageMaxLength: THREAD_STATUS_LATEST_MESSAGE_MAX_LENGTH,
+})}
+</thread>`,
+    questions: {
+      status: {
+        type: "choice",
+        instructions:
+          "From the user's perspective, what is the current status of this email thread? Check every message for unanswered questions, pending requests and promises, not just the latest one.",
+        criteria,
+      },
+    },
+    logger,
+  });
+  const status = answers?.status?.choice;
+  const probability = status && answers?.status?.probabilities?.[status];
+
+  if (
+    !status ||
+    !(status in criteria) ||
+    !probability ||
+    probability < JEV_THREAD_STATUS_CONFIDENCE
+  ) {
+    logger.info("Jev not confident on thread status, falling back to LLM", {
+      status,
+      probability,
+    });
+    return null;
+  }
+
+  return {
+    status: status as ConversationStatus,
+    rationale: `Jev (p=${probability.toFixed(2)})`,
+  };
+}
+
+// Only customized instructions count as preferences; defaults are already in the criteria.
+function getCustomizedConversationRules(conversationRules: RuleWithActions[]) {
+  return conversationRules.filter((r) => {
+    if (!r.enabled || !r.instructions || !r.systemType) return false;
+    const defaultInstructions = getRuleConfig(r.systemType).instructions;
+    return r.instructions !== defaultInstructions;
+  });
 }

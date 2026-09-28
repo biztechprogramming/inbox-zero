@@ -14,8 +14,13 @@ import { createGenerateObject } from "@/utils/llms";
 import { extractEmailAddress, isSameOrganization } from "@/utils/email";
 import { isWhitelistedSender } from "@/utils/email/whitelist";
 import { hasPriorContactOrAssumeYes } from "@/utils/cold-email/has-prior-contact";
+import { askSystemOne } from "@/utils/llms/system-one";
+import type { Logger } from "@/utils/logger";
 
 export const COLD_EMAIL_FOLDER_NAME = "Cold Emails";
+
+// Minimum probability, in either direction, for the decision model's answer to be used without the LLM.
+const JEV_COLD_EMAIL_CONFIDENCE = 0.7;
 
 type ColdEmailBlockerReason =
   | "hasPreviousEmail"
@@ -127,13 +132,11 @@ export async function isColdEmail({
     return { isColdEmail: false, reason: "hasPreviousEmail" };
   }
 
-  // run through ai to see if it's a cold email
-  const res = await aiIsColdEmail(
-    email,
-    emailAccount,
-    coldEmailRule?.instructions || DEFAULT_COLD_EMAIL_PROMPT,
-    modelType,
-  );
+  const coldEmailPrompt =
+    coldEmailRule?.instructions || DEFAULT_COLD_EMAIL_PROMPT;
+  const res =
+    (await jevIsColdEmail(email, coldEmailPrompt, logger)) ??
+    (await aiIsColdEmail(email, emailAccount, coldEmailPrompt, modelType));
 
   logger.info("AI is cold email?", {
     coldEmail: res.coldEmail,
@@ -182,4 +185,34 @@ ${stringifyEmail(email, 500)}
   });
 
   return response.object;
+}
+
+async function jevIsColdEmail(
+  email: EmailForLLM,
+  coldEmailPrompt: string,
+  logger: Logger,
+) {
+  const answers = await askSystemOne({
+    state: `<email>\n${stringifyEmail(email, 500)}\n</email>`,
+    questions: {
+      cold: {
+        type: "noul",
+        instructions: `Is this email cold outreach, as defined here?\n\n${coldEmailPrompt}`,
+      },
+    },
+    logger,
+  });
+  const probability = answers?.cold?.noul;
+  if (probability === undefined) return null;
+
+  const coldEmail = probability >= 0.5;
+  const confidence = coldEmail ? probability : 1 - probability;
+  if (confidence < JEV_COLD_EMAIL_CONFIDENCE) {
+    logger.info("Jev not confident on cold email, falling back to LLM", {
+      probability,
+    });
+    return null;
+  }
+
+  return { coldEmail, reason: `Jev (p=${probability.toFixed(2)})` };
 }

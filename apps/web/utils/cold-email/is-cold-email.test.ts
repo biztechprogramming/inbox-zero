@@ -34,6 +34,8 @@ vi.mock("@/utils/llms", () => ({
   createGenerateObject: vi.fn(() => vi.fn()),
 }));
 
+vi.mock("@/utils/llms/model", () => ({ getModel: vi.fn(() => ({})) }));
+
 const mockProvider = {
   hasPreviousCommunicationsWithSenderOrDomain: vi.fn().mockResolvedValue(false),
 };
@@ -406,5 +408,71 @@ describe("isColdEmail", () => {
         },
       });
     }
+  });
+
+  describe("with a decision model", () => {
+    const strangerEmail = {
+      id: "msg-stranger",
+      from: "pitch@agency.example",
+      to: "user@test.com",
+      subject: "Extra hands for your roadmap",
+      content: "Open to a 15 minute call this week?",
+      date: new Date(),
+    };
+    const mockFetch = vi.fn();
+    const llmGenerateObject = vi.fn();
+
+    beforeEach(() => {
+      vi.stubGlobal("fetch", mockFetch);
+      vi.mocked(prisma.groupItem.findFirst).mockResolvedValue(null);
+      vi.mocked(createGenerateObject).mockReturnValue(llmGenerateObject);
+      llmGenerateObject.mockResolvedValue({
+        object: { coldEmail: false, reason: "llm" },
+      });
+      env.JEV_ENABLED = true;
+      env.JEV_BASE_URL = "http://localhost:8009/v1";
+    });
+
+    function kevSays(probability: number) {
+      mockFetch.mockResolvedValue(
+        Response.json({ answers: { cold: { noul: probability } } }),
+      );
+    }
+
+    function check() {
+      return isColdEmail({
+        email: strangerEmail,
+        emailAccount: getEmailAccount(),
+        provider: mockProvider as never,
+        coldEmailRule: null,
+      });
+    }
+
+    it("uses a confident cold answer without the LLM", async () => {
+      kevSays(0.9);
+
+      const result = await check();
+
+      expect(result.isColdEmail).toBe(true);
+      expect(llmGenerateObject).not.toHaveBeenCalled();
+    });
+
+    it("uses a confident not-cold answer without the LLM", async () => {
+      kevSays(0.1);
+
+      const result = await check();
+
+      expect(result.isColdEmail).toBe(false);
+      expect(llmGenerateObject).not.toHaveBeenCalled();
+    });
+
+    it("asks the LLM when the answer is unsure", async () => {
+      kevSays(0.55);
+
+      const result = await check();
+
+      expect(result.aiReason).toBe("llm");
+      expect(llmGenerateObject).toHaveBeenCalled();
+    });
   });
 });

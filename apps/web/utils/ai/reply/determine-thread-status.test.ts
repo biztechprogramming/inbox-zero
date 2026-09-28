@@ -1,7 +1,21 @@
-import { describe, it, expect } from "vitest";
+import { beforeEach, describe, it, expect, vi } from "vitest";
 import { SystemType } from "@/generated/prisma/enums";
 import { getRuleConfig } from "@/utils/rule/consts";
 import type { RuleWithActions } from "@/utils/types";
+import { getEmail, getEmailAccount } from "@/__tests__/helpers";
+import { createScopedLogger } from "@/utils/logger";
+import { jevDetermineThreadStatus } from "@/utils/ai/reply/determine-thread-status";
+
+vi.mock("@/env", () => ({
+  env: {
+    JEV_ENABLED: true,
+    JEV_BASE_URL: "http://localhost:8009/v1",
+    JEV_MODEL: "kev-latest",
+  },
+}));
+
+const mockFetch = vi.fn();
+vi.stubGlobal("fetch", mockFetch);
 
 function getCustomizedRules(conversationRules: RuleWithActions[]) {
   return conversationRules.filter((r) => {
@@ -91,5 +105,78 @@ describe("getCustomizedRules", () => {
 
     const customized = getCustomizedRules(rules);
     expect(customized).toHaveLength(0);
+  });
+});
+
+describe("jevDetermineThreadStatus", () => {
+  const logger = createScopedLogger("jev-thread-status-test");
+  const threadMessages = [getEmail({ content: "Can you send the Q3 report?" })];
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  function kevSays(status: string, probability: number) {
+    mockFetch.mockResolvedValue(
+      Response.json({
+        answers: {
+          status: {
+            choice: status,
+            probabilities: { [status]: probability },
+          },
+        },
+      }),
+    );
+  }
+
+  it("uses a confident answer", async () => {
+    kevSays(SystemType.TO_REPLY, 0.9);
+
+    const result = await jevDetermineThreadStatus({
+      emailAccount: getEmailAccount(),
+      threadMessages,
+      logger,
+    });
+
+    expect(result?.status).toBe(SystemType.TO_REPLY);
+  });
+
+  it("falls back when unsure", async () => {
+    kevSays(SystemType.TO_REPLY, 0.5);
+
+    const result = await jevDetermineThreadStatus({
+      emailAccount: getEmailAccount(),
+      threadMessages,
+      logger,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("falls back on FYI when the user sent the last email", async () => {
+    kevSays(SystemType.FYI, 0.95);
+
+    const result = await jevDetermineThreadStatus({
+      emailAccount: getEmailAccount(),
+      threadMessages,
+      userSentLastEmail: true,
+      logger,
+    });
+
+    expect(result).toBeNull();
+  });
+
+  it("leaves customized conversation preferences to the LLM", async () => {
+    const result = await jevDetermineThreadStatus({
+      emailAccount: getEmailAccount(),
+      threadMessages,
+      conversationRules: [
+        createMockRule(SystemType.TO_REPLY, "Only emails from my boss"),
+      ],
+      logger,
+    });
+
+    expect(result).toBeNull();
+    expect(mockFetch).not.toHaveBeenCalled();
   });
 });

@@ -82,7 +82,9 @@ describe.runIf(shouldRunEval)("Eval: cold email", () => {
               testName: `${variant.label} | ${testCase.name}`,
               model: model.label,
               pass: result.isColdEmail === testCase.expected,
-              actual: String(result.isColdEmail),
+              actual: result.aiReason?.startsWith("Jev")
+                ? `${result.isColdEmail} (${result.aiReason})`
+                : String(result.isColdEmail),
               expected: String(testCase.expected),
             });
 
