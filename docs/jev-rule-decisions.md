@@ -97,7 +97,7 @@ No prompt or tool descriptions change. The new surface is the Jev question and o
 - [x] Put Jev in front of `aiDetermineThreadStatus`: choice question, used when probability is at least 0.8 (`JEV_THREAD_STATUS_CONFIDENCE`). Skipped when the user has customised conversation rules.
 - [x] Move the shared HTTP call into `utils/llms/system-one.ts` (`askSystemOne`)
 - [x] Put Jev in front of `aiCategorizeSender` (single sender, from the webhook): used when probability is at least 0.6 (`JEV_CATEGORY_CONFIDENCE`)
-- [ ] Bulk sender categorization (`aiCategorizeSenders`, used when a user first categorizes their inbox) still uses the LLM only
+- [x] Bulk sender categorization (`categorizeWithAi`): each sender left after the static rules goes to Jev one at a time, and only the unsure ones go to the `aiCategorizeSenders` LLM batch. At ~0.2 s per sender on local Kev, a 50-sender batch adds about 10 s.
 
 ### Phase 3: rollout
 - [ ] Enable Jev for one account and watch the Jev and fallback ratio in logs

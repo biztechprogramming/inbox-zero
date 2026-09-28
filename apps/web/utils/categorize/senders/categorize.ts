@@ -207,12 +207,27 @@ export async function categorizeWithAi({
     count: sendersToCategorizeWithAi.length,
   });
 
+  // ponytail: one call at a time (~0.2 s each on local Kev, 50 senders per batch);
+  // run a few in parallel if a hosted model makes this the bottleneck.
+  const jevCategoryBySender = new Map<string, string>();
+  for (const sender of sendersToCategorizeWithAi) {
+    const result = await jevCategorizeSender({
+      sender,
+      previousEmails: sendersWithEmails.get(sender) || [],
+      categories,
+      logger,
+    });
+    if (result) jevCategoryBySender.set(sender, result.category);
+  }
+
   const aiResults = await aiCategorizeSenders({
     emailAccount,
-    senders: sendersToCategorizeWithAi.map((sender) => ({
-      emailAddress: sender,
-      emails: sendersWithEmails.get(sender) || [],
-    })),
+    senders: sendersToCategorizeWithAi
+      .filter((sender) => !jevCategoryBySender.has(sender))
+      .map((sender) => ({
+        emailAddress: sender,
+        emails: sendersWithEmails.get(sender) || [],
+      })),
     categories,
   });
 
@@ -222,6 +237,8 @@ export async function categorizeWithAi({
 
   return categorizedSenders.map((result) => {
     if (result.category) return result;
+    const jevCategory = jevCategoryBySender.get(result.sender);
+    if (jevCategory) return { ...result, category: jevCategory };
     return aiResultsBySender.get(result.sender) ?? result;
   });
 }

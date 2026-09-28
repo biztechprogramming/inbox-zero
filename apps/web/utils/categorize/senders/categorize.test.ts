@@ -100,6 +100,7 @@ describe("categorizeWithAi", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     vi.mocked(aiCategorizeSenders).mockResolvedValue([]);
+    vi.mocked(jevCategorizeSender).mockResolvedValue(null);
   });
 
   it("does not apply static rules for categories the user does not have", async () => {
@@ -157,6 +158,40 @@ describe("categorizeWithAi", () => {
       { sender: "newsletter@substack.com", category: "Newsletter" },
       { sender: "receipt@example.com", category: "Receipt" },
       { sender: "other@example.com", category: undefined },
+    ]);
+  });
+
+  it("sends only the senders the decision model is unsure about to the LLM", async () => {
+    const sendersWithEmails = new Map([
+      ["alerts@bank.example", []],
+      ["someone@example.com", []],
+    ]);
+    vi.mocked(jevCategorizeSender).mockImplementation(async ({ sender }) =>
+      sender === "alerts@bank.example"
+        ? { category: "Notification", rationale: "Jev (p=0.9)" }
+        : null,
+    );
+    vi.mocked(aiCategorizeSenders).mockResolvedValue([
+      { sender: "someone@example.com", category: "Other" },
+    ]);
+
+    const result = await categorizeWithAi({
+      emailAccount,
+      sendersWithEmails,
+      categories: [
+        { name: "Notification", description: "Automated alerts" },
+        { name: "Other", description: "Anything else" },
+      ],
+    });
+
+    expect(vi.mocked(aiCategorizeSenders)).toHaveBeenCalledWith(
+      expect.objectContaining({
+        senders: [{ emailAddress: "someone@example.com", emails: [] }],
+      }),
+    );
+    expect(result).toEqual([
+      { sender: "alerts@bank.example", category: "Notification" },
+      { sender: "someone@example.com", category: "Other" },
     ]);
   });
 });
