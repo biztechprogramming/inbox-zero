@@ -4,11 +4,17 @@ import {
   shouldRunEvalTests,
 } from "@/__tests__/eval/models";
 import { createEvalReporter } from "@/__tests__/eval/reporter";
-import { aiCategorizeSender } from "@/utils/ai/categorize-sender/ai-categorize-single-sender";
+import {
+  aiCategorizeSender,
+  jevCategorizeSender,
+} from "@/utils/ai/categorize-sender/ai-categorize-single-sender";
+import { env } from "@/env";
+import { createScopedLogger } from "@/utils/logger";
 import { defaultCategory } from "@/utils/categories";
 
 // pnpm test-ai eval/categorize-senders
 // Multi-model: EVAL_MODELS=all pnpm test-ai eval/categorize-senders
+// Jev/Kev: JEV_ENABLED=true JEV_BASE_URL=... pnpm test-ai eval/categorize-senders -t jev
 
 const shouldRunEval = shouldRunEvalTests();
 const TIMEOUT = 60_000;
@@ -384,6 +390,42 @@ describe.runIf(shouldRunEval)("Eval: Categorize Senders", () => {
           });
 
           expect(actual).toBe(expected);
+        },
+        TIMEOUT,
+      );
+    }
+  });
+
+  // When Jev answers it must be right; falling back to the LLM is always safe.
+  // Production files an abstaining LLM under Other, so Other counts for "none".
+  describe.runIf(env.JEV_ENABLED)("jev", () => {
+    const logger = createScopedLogger("eval-categorize-senders");
+    for (const tc of testCases) {
+      const expectedLabel = tc.expected ?? "none";
+      const testName = `jev: ${tc.sender} → ${expectedLabel}`;
+      test(
+        testName,
+        async () => {
+          const start = performance.now();
+          const result = await jevCategorizeSender({
+            sender: tc.sender,
+            previousEmails: tc.emails,
+            categories: getCategories(),
+            logger,
+          });
+          const ms = Math.round(performance.now() - start);
+
+          const expected = tc.expected ?? defaultCategory.OTHER.name;
+          const pass = !result || result.category === expected;
+          evalReporter.record({
+            testName,
+            model: "jev",
+            pass,
+            expected: expectedLabel,
+            actual: `${result ? `${result.category} (${result.rationale})` : "fallback"} ${ms}ms`,
+          });
+
+          expect(pass).toBe(true);
         },
         TIMEOUT,
       );

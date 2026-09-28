@@ -5,12 +5,16 @@ import {
   categorizeSender,
   categorizeWithAi,
 } from "@/utils/categorize/senders/categorize";
-import { aiCategorizeSender } from "@/utils/ai/categorize-sender/ai-categorize-single-sender";
+import {
+  aiCategorizeSender,
+  jevCategorizeSender,
+} from "@/utils/ai/categorize-sender/ai-categorize-single-sender";
 import { aiCategorizeSenders } from "@/utils/ai/categorize-sender/ai-categorize-senders";
 import { upsertSenderRecord } from "@/utils/senders/record";
 
 vi.mock("@/utils/ai/categorize-sender/ai-categorize-single-sender", () => ({
   aiCategorizeSender: vi.fn(),
+  jevCategorizeSender: vi.fn().mockResolvedValue(null),
 }));
 
 vi.mock("@/utils/ai/categorize-sender/ai-categorize-senders", () => ({
@@ -67,6 +71,26 @@ describe("categorizeSender", () => {
       },
     });
     expect(result).toEqual({ categoryId: "cat-other" });
+  });
+
+  it("uses a confident decision-model category without the LLM", async () => {
+    vi.mocked(jevCategorizeSender).mockResolvedValueOnce({
+      category: defaultCategory.NOTIFICATION.name,
+      rationale: "Jev (p=0.85)",
+    });
+    vi.mocked(upsertSenderRecord).mockResolvedValue({
+      categoryId: "cat-notification",
+    } as Awaited<ReturnType<typeof upsertSenderRecord>>);
+
+    const result = await categorizeSender(
+      "noreply@github.com",
+      emailAccount,
+      provider as never,
+      categories,
+    );
+
+    expect(aiCategorizeSender).not.toHaveBeenCalled();
+    expect(result).toEqual({ categoryId: "cat-notification" });
   });
 });
 

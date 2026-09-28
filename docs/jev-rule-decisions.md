@@ -41,7 +41,7 @@ Jev slots in at step 4 and in the other LLM decision points listed in phase 2.
 |---|---|
 | `aiIsColdEmail`, `utils/cold-email/is-cold-email.ts` | `boolean` "is this unsolicited cold outreach" |
 | `determineConversationStatus`, `utils/reply-tracker/handle-conversation-status.ts` | `choice` of TO_REPLY / FYI / AWAITING_REPLY / ACTIONED |
-| `categorizeSender`, `utils/webhook/process-history-item.ts` | No port. Rule matching no longer reads its result, so evaluate turning it off instead. |
+| `aiCategorizeSender`, `utils/categorize/senders/categorize.ts` | `choice` over the user's categories. Rule matching doesn't read it, but Smart Categories and Bulk Archive group senders by it, so it stays on. |
 
 The same fallback rule applies to each: below the threshold, the existing LLM call runs.
 
@@ -96,7 +96,8 @@ No prompt or tool descriptions change. The new surface is the Jev question and o
 - [x] Put Jev in front of `aiIsColdEmail`: yes/no question, used when confidence is at least 0.7 in either direction (`JEV_COLD_EMAIL_CONFIDENCE`)
 - [x] Put Jev in front of `aiDetermineThreadStatus`: choice question, used when probability is at least 0.8 (`JEV_THREAD_STATUS_CONFIDENCE`). Skipped when the user has customised conversation rules.
 - [x] Move the shared HTTP call into `utils/llms/system-one.ts` (`askSystemOne`)
-- [ ] Decide whether to turn off `categorizeSender`
+- [x] Put Jev in front of `aiCategorizeSender` (single sender, from the webhook): used when probability is at least 0.6 (`JEV_CATEGORY_CONFIDENCE`)
+- [ ] Bulk sender categorization (`aiCategorizeSenders`, used when a user first categorizes their inbox) still uses the LLM only
 
 ### Phase 3: rollout
 - [ ] Enable Jev for one account and watch the Jev and fallback ratio in logs
@@ -158,4 +159,15 @@ Kev's mistakes are genuine but unsolicited inbound mail (investors, journalists,
 | **0.80 (chosen)** | 6/24 | 0 |
 
 Kev is confident only on simple threads: a single question, a plain FYI, automated notifications. Multi-person threads and implied promises go to the LLM. Two of its errors came from tests that don't pass `userSentLastEmail`, which production does. 24 cases is a small sample.
+
+**Sender categorization** (`__tests__/eval/categorize-senders.test.ts`, 19 senders, default categories):
+
+| Threshold | Decided by Kev | Wrong |
+|---|---|---|
+| 0.40 | 19/19 | 3 |
+| 0.50 | 13/19 | 0 |
+| **0.60 (chosen)** | 11/19 | 0 |
+| 0.80 | 6/19 | 0 |
+
+Kev's only mistakes: three receipt senders (Airbnb, Apple, Vercel) called Notification, at p = 0.44 to 0.48. A wrong category only affects grouping in Smart Categories and Bulk Archive, but 0.5 is too close to those errors, so 0.6 it is. Latency: median 210 ms (135 to 313 ms). The confirmation run at 0.6 passed all 19 cases.
 

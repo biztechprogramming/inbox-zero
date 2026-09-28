@@ -3,7 +3,10 @@ import { aiCategorizeSenders } from "@/utils/ai/categorize-sender/ai-categorize-
 import { defaultCategory, type SenderCategory } from "@/utils/categories";
 import { isNewsletterSender } from "@/utils/ai/group/find-newsletters";
 import { isReceiptSender } from "@/utils/ai/group/find-receipts";
-import { aiCategorizeSender } from "@/utils/ai/categorize-sender/ai-categorize-single-sender";
+import {
+  aiCategorizeSender,
+  jevCategorizeSender,
+} from "@/utils/ai/categorize-sender/ai-categorize-single-sender";
 import type { Category } from "@/generated/prisma/client";
 import { getUserCategories } from "@/utils/category.server";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
@@ -31,12 +34,19 @@ export async function categorizeSender(
     3,
   );
 
-  const aiResult = await aiCategorizeSender({
-    emailAccount,
-    sender: senderAddress,
-    previousEmails,
-    categories,
-  });
+  const aiResult =
+    (await jevCategorizeSender({
+      sender: senderAddress,
+      previousEmails,
+      categories,
+      logger,
+    })) ??
+    (await aiCategorizeSender({
+      emailAccount,
+      sender: senderAddress,
+      previousEmails,
+      categories,
+    }));
 
   const fallbackCategory = categories.find(
     (category) => category.name === defaultCategory.OTHER.name,

@@ -5,6 +5,11 @@ import { formatCategoriesForPrompt } from "@/utils/ai/categorize-sender/format-c
 import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
 import { createGenerateObject } from "@/utils/llms";
 import { strictOptional } from "@/utils/llms/strict-optional";
+import { askSystemOne } from "@/utils/llms/system-one";
+import type { Logger } from "@/utils/logger";
+
+// Minimum probability for the decision model's answer to be used without the LLM.
+const JEV_CATEGORY_CONFIDENCE = 0.6;
 
 export async function aiCategorizeSender({
   emailAccount,
@@ -75,4 +80,67 @@ ${formatCategoriesForPrompt(categories)}
     return null;
 
   return aiResponse.object;
+}
+
+// Returns null when the caller should fall back to the LLM.
+export async function jevCategorizeSender({
+  sender,
+  previousEmails,
+  categories,
+  logger,
+}: {
+  sender: string;
+  previousEmails: { subject: string; snippet: string }[];
+  categories: Pick<Category, "name" | "description">[];
+  logger: Logger;
+}): Promise<{ category: string; rationale: string } | null> {
+  if (!categories.length) return null;
+
+  // Keyed by index because category names can contain arbitrary characters.
+  const criteria = Object.fromEntries(
+    categories.map((c, i) => [
+      `c${i}`,
+      c.description ? `${c.name}: ${c.description}` : c.name,
+    ]),
+  );
+
+  const answers = await askSystemOne({
+    state: `Sender: ${sender}
+
+Recent emails from this sender:
+${
+  previousEmails
+    .slice(0, 3)
+    .map(
+      (email) =>
+        `<email><subject>${email.subject}</subject><snippet>${email.snippet}</snippet></email>`,
+    )
+    .join("\n") || "No previous emails found"
+}`,
+    questions: {
+      category: {
+        type: "choice",
+        instructions:
+          "Which category best describes this sender, judging from their address and the emails they send?",
+        criteria,
+      },
+    },
+    logger,
+  });
+  const choice = answers?.category?.choice;
+  const probability = choice && answers?.category?.probabilities?.[choice];
+  const category = choice && categories[Number(choice.slice(1))];
+
+  if (!category || !probability || probability < JEV_CATEGORY_CONFIDENCE) {
+    logger.info("Jev not confident on sender category, falling back to LLM", {
+      choice,
+      probability,
+    });
+    return null;
+  }
+
+  return {
+    category: category.name,
+    rationale: `Jev (p=${probability.toFixed(2)})`,
+  };
 }
