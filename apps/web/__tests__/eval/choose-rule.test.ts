@@ -6,13 +6,16 @@ import {
 } from "@/__tests__/eval/models";
 import { createEvalReporter } from "@/__tests__/eval/reporter";
 import { aiChooseRule } from "@/utils/ai/choose-rule/ai-choose-rule";
+import { jevChooseRule } from "@/utils/ai/choose-rule/jev-choose-rule";
+import { env } from "@/env";
 import { CONVERSATION_TRACKING_INSTRUCTIONS } from "@/utils/ai/choose-rule/run-rules";
 import { getRuleConfig } from "@/utils/rule/consts";
-import { getEmail, getRule } from "@/__tests__/helpers";
+import { getEmail, getEmailAccount, getRule } from "@/__tests__/helpers";
 import { createScopedLogger } from "@/utils/logger";
 
 // pnpm test-ai eval/choose-rule
 // Multi-model: EVAL_MODELS=all pnpm test-ai eval/choose-rule
+// Jev/Kev: JEV_ENABLED=true JEV_BASE_URL=... pnpm test-ai eval/choose-rule
 
 const shouldRunEval = shouldRunEvalTests();
 const TIMEOUT = 60_000;
@@ -949,6 +952,48 @@ describe.runIf(shouldRunEval)("Eval: Choose Rule", () => {
     },
     { multiRuleSelectionEnabled: true },
   );
+
+  // When Jev answers it must be right; falling back to the LLM is always safe.
+  describe.runIf(env.JEV_ENABLED)("jev", () => {
+    for (const tc of [...testCases, ...promotionalBoundaryCases]) {
+      const expectedLabel = Array.isArray(tc.expectedRule)
+        ? tc.expectedRule.join(" | ")
+        : (tc.expectedRule ?? "no match");
+      const testName = `jev: ${tc.email.from} / ${tc.email.subject} → ${expectedLabel}`;
+      test(
+        testName,
+        async () => {
+          const start = performance.now();
+          const result = await jevChooseRule({
+            email: tc.email,
+            rules,
+            emailAccount: getEmailAccount(),
+            logger,
+          });
+          const ms = Math.round(performance.now() - start);
+
+          const actual = result
+            ? (result.rules[0]?.rule.name ?? "no match")
+            : "fallback";
+          const acceptable = Array.isArray(tc.expectedRule)
+            ? tc.expectedRule
+            : [tc.expectedRule ?? "no match"];
+          const pass = actual === "fallback" || acceptable.includes(actual);
+
+          evalReporter.record({
+            testName,
+            model: "jev",
+            pass,
+            expected: expectedLabel,
+            actual: `${result ? `${actual} (${result.reason})` : actual} ${ms}ms`,
+          });
+
+          expect(pass).toBe(true);
+        },
+        TIMEOUT,
+      );
+    }
+  });
 
   afterAll(() => {
     evalReporter.printReport();

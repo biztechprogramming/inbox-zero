@@ -13,6 +13,7 @@ import {
 import { ConditionType } from "@/utils/config";
 import prisma from "@/utils/prisma";
 import { aiChooseRule } from "@/utils/ai/choose-rule/ai-choose-rule";
+import { jevChooseRule } from "@/utils/ai/choose-rule/jev-choose-rule";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { Logger } from "@/utils/logger";
@@ -544,14 +545,23 @@ async function findMatchingRulesWithReasons(
         })
       : null;
 
-    const fullResult = await aiChooseRule({
-      email: getEmailForLLM(message),
-      rules: potentialAiMatches,
-      emailAccount,
-      modelType,
-      logger,
-      classificationFeedback,
-    });
+    const email = getEmailForLLM(message);
+    const fullResult =
+      (await jevChooseRule({
+        email,
+        rules: potentialAiMatches,
+        emailAccount,
+        logger,
+        classificationFeedback,
+      })) ??
+      (await aiChooseRule({
+        email,
+        rules: potentialAiMatches,
+        emailAccount,
+        modelType,
+        logger,
+        classificationFeedback,
+      }));
 
     const aiRules = filterMultipleSystemRules(fullResult.rules);
 

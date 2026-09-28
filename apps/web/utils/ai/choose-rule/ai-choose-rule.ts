@@ -413,7 +413,7 @@ function joinLogValues(values: (string | null | undefined)[]) {
   return values.filter(isDefined).join(", ");
 }
 
-function formatClassificationFeedback(
+export function formatClassificationFeedback(
   feedback: ClassificationFeedbackItem[] | null | undefined,
 ): string {
   if (!feedback?.length) return "";

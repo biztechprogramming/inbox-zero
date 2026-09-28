@@ -180,6 +180,15 @@ const parsedEnv = createEnv({
     CEREBRAS_API_KEY: z.string().optional(),
     OPENROUTER_API_KEY: z.string().optional(),
     AI_GATEWAY_API_KEY: z.string().optional(),
+    JEV_ENABLED: booleanString.optional().default(false),
+    JEV_BASE_URL: z
+      .string()
+      .url()
+      .optional()
+      .default("https://api.typesafe.ai/v1"),
+    JEV_API_KEY: z.string().optional(),
+    JEV_MODEL: z.string().optional().default("jev-latest"),
+    JEV_RULE_THRESHOLD: z.coerce.number().min(0).max(1).optional().default(0.4),
     PERPLEXITY_API_KEY: z.string().optional(),
     OLLAMA_BASE_URL: z.string().optional(),
     OLLAMA_MODEL: z.string().optional(),
