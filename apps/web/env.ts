@@ -188,6 +188,7 @@ const parsedEnv = createEnv({
     OPENAI_COMPATIBLE_AUTH_HEADER: z
       .enum(["authorization", "api-key"])
       .optional(),
+    KNOWLEDGE_STORE_ENABLED: booleanString.optional().default(false),
     CLI_LLM_ENABLED: booleanString.optional().default(false),
     CODEX_CLI_ALLOW_NPX: booleanString.optional().default(false),
     CODEX_CLI_PATH: z.string().optional(),

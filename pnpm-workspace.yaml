@@ -45,6 +45,8 @@ allowBuilds:
   "@google/genai": true
   "@prisma/engines": true
   "@sentry/cli": true
+  # mem0ai imports it top-level; unused at runtime (history store disabled).
+  better-sqlite3: true
   braintrust: true
   core-js: true
   # Local/desktop only. Docker, Vercel, and CI skip @inboxzero/desktop.

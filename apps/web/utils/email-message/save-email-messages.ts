@@ -21,6 +21,7 @@ import {
   type MessageEnrichment,
   type MessageToEnrich,
 } from "@/utils/email-message/enrich-messages";
+import { queueKnowledgeExtraction } from "@/utils/knowledge/extract-queue";
 
 // The only writer of EmailMessage. The stats loader, the backfill script and the
 // webhook all route through here so a message is stored identically whichever
@@ -177,6 +178,16 @@ export async function saveParsedMessages({
       "embedding" = COALESCE(EXCLUDED."embedding", "EmailMessage"."embedding"),
       "updatedAt" = NOW()
   `;
+
+  // Fact extraction is queued (LLM + provider work); messages whose
+  // `knowledgeExtractedAt` is already set become no-ops in the consumer.
+  await queueKnowledgeExtraction({
+    emailAccountId,
+    messageIds: emails
+      .filter((email) => !email.draft)
+      .map((email) => email.messageId),
+    logger,
+  });
 
   return emails.length;
 }

@@ -18,6 +18,8 @@ import {
 } from "@/utils/mcp/account-selection";
 import type { MCP_SCOPES } from "@/utils/mcp/config";
 import { isMcpServerEnabledForUser } from "@/utils/mcp/access";
+import { searchKnowledgeItems } from "@/utils/knowledge/retrieve";
+import { getEmailAccountWithAi } from "@/utils/user/get";
 
 const logger = createScopedLogger("mcp-server");
 type ToolResultData = Record<string, unknown>;
@@ -57,6 +59,36 @@ export async function handleMcpServerRequest(
       const accounts = await listMcpEmailAccounts(userId);
 
       return createToolResult({ accounts });
+    },
+  );
+
+  server.registerTool(
+    "search_knowledge",
+    {
+      description:
+        "Semantic search over durable facts extracted from one inbox account's email: contact details, commitments, the user's preferences and standing decisions, reference answers (pricing, policies), and how the user replies to particular audiences. Returns the most relevant facts with provenance metadata (source thread and message). Read-only. Returns an empty list when the knowledge store is disabled for this deployment or account.",
+      inputSchema: {
+        ...accountSelectorShape,
+        query: z.string().describe("What to look for, in natural language."),
+        limit: z.number().int().min(1).max(50).optional(),
+      },
+    },
+    async ({ query, limit, ...args }) => {
+      assertMcpScope(session.scopes, "mcp:read");
+      const emailAccount = await resolveMcpEmailAccount({ userId, ...args });
+      const accountWithAi = await getEmailAccountWithAi({
+        emailAccountId: emailAccount.id,
+      });
+      const facts = accountWithAi
+        ? await searchKnowledgeItems({
+            emailAccount: accountWithAi,
+            query,
+            topK: limit,
+            logger,
+          })
+        : [];
+
+      return createToolResult({ emailAccount, facts });
     },
   );
 
