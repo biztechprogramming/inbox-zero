@@ -117,7 +117,7 @@ describe("mcp-server", () => {
     } as never);
 
     expect(mcpServerConstructor).toHaveBeenCalledTimes(1);
-    expect(registerTool).toHaveBeenCalledTimes(8);
+    expect(registerTool).toHaveBeenCalledTimes(9);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(transportConstructor).toHaveBeenCalledWith({
       sessionIdGenerator: undefined,
@@ -179,6 +179,7 @@ describe("MCP tool permissions and rule writes", () => {
     "get_rule",
     "get_stats_by_period",
     "get_response_time_stats",
+    "search_knowledge",
   ])("denies %s without a read grant", async (name) => {
     const tool = await getTool(name, ["offline_access"]);
     await expect(tool({ id: "rule_1" })).rejects.toThrow(

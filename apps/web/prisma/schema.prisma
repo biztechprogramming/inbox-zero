@@ -1103,6 +1103,9 @@ model EmailMessage {
   aiSummary  String?
   aiCategory String?
   aiUrgency  Int?                         @db.SmallInt
+  // Set once durable facts from this message have been stored in the Mem0
+  // knowledge store; null means extraction is still pending (or gated off).
+  knowledgeExtractedAt DateTime?
   // The ivfflat index on `embedding` lives only in the migration SQL: Prisma has
   // no `@@index` type for it. Check that `prisma migrate dev` has not generated a
   // DROP for `EmailMessage_embedding_idx` before committing a new migration.

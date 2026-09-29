@@ -393,6 +393,8 @@ const nextConfig: NextConfig = {
     "@vercel/queue",
     "bullmq",
     "mammoth",
+    // Imports the native better-sqlite3 module at top level.
+    "mem0ai",
     "unpdf",
   ],
   turbopack: {

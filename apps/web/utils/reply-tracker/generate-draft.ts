@@ -9,6 +9,9 @@ import type { EmailAccountWithAI } from "@/utils/llms/types";
 import type { Logger } from "@/utils/logger";
 import prisma from "@/utils/prisma";
 import { aiExtractRelevantKnowledge } from "@/utils/ai/knowledge/extract";
+import { isKnowledgeStoreEnabled } from "@/utils/knowledge/config";
+import { searchKnowledge } from "@/utils/knowledge/retrieve";
+import type { Knowledge } from "@/generated/prisma/client";
 import { stringifyEmail } from "@/utils/stringify-email";
 import { aiExtractFromEmailHistory } from "@/utils/ai/knowledge/extract-from-email-history";
 import type { EmailProvider } from "@/utils/email/types";
@@ -236,11 +239,16 @@ async function generateDraftContent(
     }),
   }));
 
-  // 1. Get knowledge base entries
-  const knowledgeBase = await prisma.knowledge.findMany({
-    where: { emailAccountId: emailAccount.id },
-    orderBy: { updatedAt: "desc" },
-  });
+  // 1. Get knowledge base entries. The Mem0 store replaces the Knowledge
+  // table: retrieval happens per-query in getKnowledgeContext instead of
+  // loading every entry into the extraction prompt.
+  const useKnowledgeStore = isKnowledgeStoreEnabled();
+  const knowledgeBase = useKnowledgeStore
+    ? []
+    : await prisma.knowledge.findMany({
+        where: { emailAccountId: emailAccount.id },
+        orderBy: { updatedAt: "desc" },
+      });
 
   // If we have knowledge base entries, extract relevant knowledge and draft with it
   // 2a. Extract relevant knowledge
@@ -327,7 +335,8 @@ async function generateDraftContent(
     activeBookingLinks,
     senderReplyExamples,
   ] = await Promise.all([
-    aiExtractRelevantKnowledge({
+    getKnowledgeContext({
+      useKnowledgeStore,
       knowledgeBase,
       emailContent: lastMessageContent,
       emailAccount,
@@ -545,4 +554,34 @@ async function generateDraftContent(
       ? { attachments: attachmentSelection.selectedAttachments }
       : {}),
   };
+}
+
+async function getKnowledgeContext({
+  useKnowledgeStore,
+  knowledgeBase,
+  emailContent,
+  emailAccount,
+  logger,
+}: {
+  useKnowledgeStore: boolean;
+  knowledgeBase: Knowledge[];
+  emailContent: string;
+  emailAccount: EmailAccountWithAI;
+  logger: Logger;
+}): Promise<{ relevantContent: string | null } | null> {
+  if (useKnowledgeStore) {
+    const relevantContent = await searchKnowledge({
+      emailAccount,
+      query: emailContent,
+      logger,
+    });
+    return { relevantContent };
+  }
+
+  return aiExtractRelevantKnowledge({
+    knowledgeBase,
+    emailContent,
+    emailAccount,
+    logger,
+  });
 }

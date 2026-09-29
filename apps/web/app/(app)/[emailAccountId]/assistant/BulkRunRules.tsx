@@ -6,7 +6,7 @@ import { Button } from "@/components/ui/button";
 import { SectionDescription } from "@/components/Typography";
 import { LoadingContent } from "@/components/LoadingContent";
 import { pauseAiQueue, resumeAiQueue } from "@/utils/queue/ai-queue";
-import { toastError } from "@/components/Toast";
+import { toastError, toastSuccess } from "@/components/Toast";
 import { PremiumAlertWithData } from "@/components/PremiumAlert";
 import { usePremium } from "@/hooks/usePremium";
 import { SetDateDropdown } from "@/app/(app)/[emailAccountId]/assistant/SetDateDropdown";
@@ -38,6 +38,11 @@ import {
 import { EndTrialButton } from "@/components/EndTrialButton";
 import { onRun } from "@/app/(app)/[emailAccountId]/assistant/bulk-run";
 import { useAiAutomationStatus } from "@/hooks/useAiAutomationStatus";
+import { addDays } from "date-fns/addDays";
+import { startOfDay } from "date-fns/startOfDay";
+import { env } from "@/env";
+import { backfillKnowledgeAction } from "@/utils/actions/knowledge";
+import { getActionErrorMessage } from "@/utils/error";
 
 const TRIAL_BULK_PROCESS_EMAIL_LIMIT = 200;
 
@@ -76,6 +81,7 @@ export function BulkRunRules() {
   const [includeRead, setIncludeRead] = useState(false);
   const [rerun, setRerun] = useState(false);
   const [generateDraftReplies, setGenerateDraftReplies] = useState(false);
+  const [extractKnowledge, setExtractKnowledge] = useState(false);
 
   const abortRef = useRef<() => void>(undefined);
 
@@ -109,6 +115,23 @@ export function BulkRunRules() {
       });
       dispatch({ type: "RESET" });
       return;
+    }
+
+    // Knowledge extraction runs on the server-side queue, so one call covers
+    // the whole date range and keeps processing after this dialog is closed.
+    if (extractKnowledge) {
+      const result = await backfillKnowledgeAction(emailAccountId, {
+        after: startDate,
+        // The selected end day is inclusive; the query bound is exclusive.
+        before: endDate ? startOfDay(addDays(endDate, 1)) : undefined,
+      });
+      if (result?.data) {
+        toastSuccess({
+          description: `Queued ${result.data.queued} emails for knowledge extraction. This runs in the background.`,
+        });
+      } else {
+        toastError({ description: getActionErrorMessage(result ?? {}) });
+      }
     }
 
     // Ensure queue is not paused from a previous run
@@ -248,6 +271,18 @@ export function BulkRunRules() {
                 disabled={isBusy}
                 explainText="Run draft reply actions from your rules for these emails, including drafts sent to connected messaging channels. Off by default."
               />
+
+              {env.NEXT_PUBLIC_KNOWLEDGE_STORE_ENABLED && (
+                <Toggle
+                  name="extract-knowledge"
+                  ariaLabel="Extract knowledge"
+                  label="Extract knowledge"
+                  enabled={extractKnowledge}
+                  onChange={setExtractKnowledge}
+                  disabled={isBusy}
+                  explainText="Save durable facts from these emails (and your replies to them) to the assistant's knowledge store. Runs in the background; you can close this dialog."
+                />
+              )}
 
               {isTrial && (
                 <div className="flex flex-col gap-3 rounded-md border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-800 dark:border-blue-800 dark:bg-blue-950 dark:text-blue-200 sm:flex-row sm:items-center sm:justify-between">
