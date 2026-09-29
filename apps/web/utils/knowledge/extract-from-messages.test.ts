@@ -53,7 +53,10 @@ describe("extractKnowledgeFromMessages", () => {
       account: { provider: "google" },
     } as any);
     prisma.emailMessage.update.mockResolvedValue({} as any);
-    getMessage.mockResolvedValue({ id: "msg" });
+    getMessage.mockResolvedValue({
+      id: "msg",
+      headers: { to: "user@test.com" },
+    });
     getEmailForLLM.mockReturnValue({
       id: "msg",
       from: "sender@test.com",
@@ -82,6 +85,7 @@ describe("extractKnowledgeFromMessages", () => {
         threadId: "thread-m1",
         messageId: "m1",
         direction: "received",
+        audience: "direct",
         date: candidate("m1").date.toISOString(),
       },
     });
@@ -91,6 +95,7 @@ describe("extractKnowledgeFromMessages", () => {
         threadId: "thread-m2",
         messageId: "m2",
         direction: "sent",
+        audience: "direct",
         date: candidate("m2").date.toISOString(),
       },
     });
@@ -101,6 +106,27 @@ describe("extractKnowledgeFromMessages", () => {
     expect(getEmailForLLM).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ extractReply: true }),
+    );
+  });
+
+  it.each([
+    ["cc", { to: "other@test.com", cc: "user@test.com" }],
+    ["list", { to: "techsupport@test.com" }],
+  ] as const)("classifies mail reaching the user via %s", async (audience, headers) => {
+    prisma.emailMessage.findMany.mockResolvedValue([candidate("m1") as never]);
+    getMessage.mockResolvedValue({ id: "msg", headers });
+
+    await extractKnowledgeFromMessages({
+      emailAccountId,
+      messageIds: ["m1"],
+      logger,
+    });
+
+    expect(memoryAdd).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.objectContaining({ audience }),
+      }),
     );
   });
 

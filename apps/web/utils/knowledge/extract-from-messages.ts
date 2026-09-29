@@ -1,5 +1,7 @@
+import { extractEmailAddresses, isSameEmailAddress } from "@/utils/email";
 import { createEmailProvider } from "@/utils/email/provider";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
+import type { ParsedMessage } from "@/utils/types";
 import { getKnowledgeMemory } from "@/utils/knowledge/memory";
 import type { Logger } from "@/utils/logger";
 import prisma from "@/utils/prisma";
@@ -94,6 +96,11 @@ export async function extractKnowledgeFromMessages({
               threadId: candidate.threadId,
               messageId: candidate.messageId,
               direction: candidate.sent ? "sent" : "received",
+              audience: getAudience({
+                message,
+                sent: candidate.sent,
+                userEmail: emailAccount.email,
+              }),
               // add()'s timestamp option is rejected by the OSS SDK (paid
               // platform feature), so the message date rides in metadata.
               date: candidate.date.toISOString(),
@@ -143,6 +150,35 @@ function markExtracted(
     },
     data: { knowledgeExtractedAt: new Date() },
   });
+}
+
+/**
+ * Whether the user was personally addressed. Mail that reaches the mailbox
+ * without the user in To/Cc came via a distribution list, alias, or bcc, and
+ * ranks below personal mail in knowledge retrieval.
+ */
+function getAudience({
+  message,
+  sent,
+  userEmail,
+}: {
+  message: ParsedMessage;
+  sent: boolean;
+  userEmail: string;
+}): "direct" | "cc" | "list" {
+  if (sent) return "direct";
+
+  const to = extractEmailAddresses(message.headers.to ?? "");
+  if (to.some((address) => isSameEmailAddress(address, userEmail))) {
+    return "direct";
+  }
+
+  const cc = extractEmailAddresses(message.headers.cc ?? "");
+  if (cc.some((address) => isSameEmailAddress(address, userEmail))) {
+    return "cc";
+  }
+
+  return "list";
 }
 
 function isContentFilterError(error: unknown) {

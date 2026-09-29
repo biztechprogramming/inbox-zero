@@ -66,24 +66,33 @@ export async function handleMcpServerRequest(
     "search_knowledge",
     {
       description:
-        "Semantic search over durable facts extracted from one inbox account's email: contact details, commitments, the user's preferences and standing decisions, reference answers (pricing, policies), and how the user replies to particular audiences. Returns the most relevant facts with provenance metadata (source thread and message). Read-only. Returns an empty list when the knowledge store is disabled for this deployment or account.",
+        "Semantic search over durable facts extracted from one inbox account's email: contact details, commitments, the user's preferences and standing decisions, reference answers (pricing, policies), and how the user replies to particular audiences. Returns the most relevant facts with provenance metadata (source thread and message). Read-only. Returns an empty list when the knowledge store is disabled for this deployment or account. By default only mail personally addressed to the user is searched; pass audience to include mail the user received via distribution lists (e.g. a shared tech-support inbox) or cc.",
       inputSchema: {
         ...accountSelectorShape,
         query: z.string().describe("What to look for, in natural language."),
         limit: z.number().int().min(1).max(50).optional(),
+        audience: z
+          .enum(["direct", "cc", "list", "any"])
+          .optional()
+          .describe(
+            'How the user received the source mail. "direct" (default): addressed to the user. "cc": copied. "list": arrived via a distribution list or alias. "any": no restriction.',
+          ),
       },
     },
-    async ({ query, limit, ...args }) => {
+    async ({ query, limit, audience, ...args }) => {
       assertMcpScope(session.scopes, "mcp:read");
       const emailAccount = await resolveMcpEmailAccount({ userId, ...args });
       const accountWithAi = await getEmailAccountWithAi({
         emailAccountId: emailAccount.id,
       });
+      const audienceFilter =
+        audience === "any" ? undefined : (audience ?? "direct");
       const facts = accountWithAi
         ? await searchKnowledgeItems({
             emailAccount: accountWithAi,
             query,
             topK: limit,
+            audience: audienceFilter,
             logger,
           })
         : [];
