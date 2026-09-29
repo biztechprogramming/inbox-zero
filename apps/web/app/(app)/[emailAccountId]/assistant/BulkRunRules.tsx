@@ -101,6 +101,29 @@ export function BulkRunRules() {
   // Warn user before leaving page during processing (includes initial fetch)
   useBeforeUnload(isBusy);
 
+  const queueKnowledgeBackfill = async (start: Date) => {
+    const result = await backfillKnowledgeAction(emailAccountId, {
+      after: start,
+      // The selected end day is inclusive; the query bound is exclusive.
+      before: endDate ? startOfDay(addDays(endDate, 1)) : undefined,
+    });
+    if (result?.data) {
+      toastSuccess({
+        description: `Queued ${result.data.queued} emails for knowledge extraction. This runs in the background.`,
+      });
+    } else {
+      toastError({ description: getActionErrorMessage(result ?? {}) });
+    }
+  };
+
+  const handleExtractKnowledgeOnly = async () => {
+    if (!startDate) {
+      toastError({ description: "Please select a start date" });
+      return;
+    }
+    await queueKnowledgeBackfill(startDate);
+  };
+
   const handleStart = async () => {
     dispatch({ type: "START" });
 
@@ -120,18 +143,7 @@ export function BulkRunRules() {
     // Knowledge extraction runs on the server-side queue, so one call covers
     // the whole date range and keeps processing after this dialog is closed.
     if (extractKnowledge) {
-      const result = await backfillKnowledgeAction(emailAccountId, {
-        after: startDate,
-        // The selected end day is inclusive; the query bound is exclusive.
-        before: endDate ? startOfDay(addDays(endDate, 1)) : undefined,
-      });
-      if (result?.data) {
-        toastSuccess({
-          description: `Queued ${result.data.queued} emails for knowledge extraction. This runs in the background.`,
-        });
-      } else {
-        toastError({ description: getActionErrorMessage(result ?? {}) });
-      }
+      await queueKnowledgeBackfill(startDate);
     }
 
     // Ensure queue is not paused from a previous run
@@ -314,18 +326,30 @@ export function BulkRunRules() {
 
               {(state.status === "idle" || state.status === "stopped") &&
                 !isProcessing && (
-                  <Button
-                    type="button"
-                    disabled={
-                      !startDate ||
-                      !emailAccountId ||
-                      !hasAiAccess ||
-                      trialAiLimitMessage !== null
-                    }
-                    onClick={handleStart}
-                  >
-                    Process Emails
-                  </Button>
+                  <div className="flex gap-2">
+                    <Button
+                      type="button"
+                      disabled={
+                        !startDate ||
+                        !emailAccountId ||
+                        !hasAiAccess ||
+                        trialAiLimitMessage !== null
+                      }
+                      onClick={handleStart}
+                    >
+                      Process Emails
+                    </Button>
+                    {env.NEXT_PUBLIC_KNOWLEDGE_STORE_ENABLED && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        disabled={!startDate || !emailAccountId}
+                        onClick={handleExtractKnowledgeOnly}
+                      >
+                        Extract knowledge only
+                      </Button>
+                    )}
+                  </div>
                 )}
               {isBusy && (
                 <div className="flex justify-end gap-2">
