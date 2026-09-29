@@ -2,10 +2,13 @@
 
 import prisma from "@/utils/prisma";
 import {
+  backfillKnowledgeBody,
   createKnowledgeBody,
   updateKnowledgeBody,
   deleteKnowledgeBody,
 } from "@/utils/actions/knowledge.validation";
+import { queueKnowledgeBackfill } from "@/utils/knowledge/backfill";
+import { isKnowledgeStoreEnabled } from "@/utils/knowledge/config";
 import { actionClient } from "@/utils/actions/safe-action";
 import { SafeError } from "@/utils/error";
 import {
@@ -90,3 +93,19 @@ export const deleteKnowledgeAction = actionClient
       where: { id, emailAccountId },
     });
   });
+
+export const backfillKnowledgeAction = actionClient
+  .metadata({ name: "backfillKnowledge" })
+  .inputSchema(backfillKnowledgeBody)
+  .action(
+    async ({
+      ctx: { emailAccountId, logger },
+      parsedInput: { sinceMonths },
+    }) => {
+      if (!isKnowledgeStoreEnabled()) {
+        throw new SafeError("The knowledge store is not enabled.");
+      }
+
+      return queueKnowledgeBackfill({ emailAccountId, sinceMonths, logger });
+    },
+  );

@@ -1,11 +1,12 @@
 # Plan: Mem0-backed email knowledge base
 
-Status: core implemented behind `KNOWLEDGE_STORE_ENABLED` (off by default) — queued
+Status: implemented behind `KNOWLEDGE_STORE_ENABLED` (off by default) — queued
 sync-time extraction with fresh-fragment stripping, Mem0-backed draft retrieval
-replacing the whole-table prompt-stuffing path, and the read-only `search_knowledge`
-MCP tool. Still pending: live round-trip verification against a dev database (phase 1),
-historical backfill (phase 3), `Knowledge`/`ReplyMemory` migration (phase 5), and the
-performance phase (6).
+replacing the whole-table prompt-stuffing path, the read-only `search_knowledge`
+MCP tool, and the backfill action. Phase 1 live verification passed against the dev
+database (azure-foundry provider; add → extraction → scoped search → tenant isolation).
+Still pending: shadow-mode bake-in on real mail, draft-quality evals,
+`Knowledge`/`ReplyMemory` migration (phase 5 remainder), and the performance phase (6).
 
 Directive: **maximum knowledge first, maximum performance second.** Capture breadth
 (all fact-bearing mail, full history backfill) before optimizing retrieval quality
@@ -304,9 +305,11 @@ same queue at low priority.
 2. **Ingestion (shadow mode)** — queued extraction from `saveParsedMessages` +
    `handleOutboundReply` behind a feature flag for internal accounts; nothing reads the
    store yet. Watch extraction quality, token spend, dedup behavior on long threads.
-3. **Backfill (maximum knowledge)** — historical extraction through the same queue at
-   low priority: default 12 months of inbox + sent mail, configurable, oldest-last so
-   the freshest knowledge lands first. Ships with per-account token-spend accounting.
+3. **Backfill (maximum knowledge)** — implemented: `backfillKnowledgeAction` queues
+   extraction for the account's unextracted mirror messages (default 12 months,
+   configurable, newest-first) through the same per-account queue. Spend visibility is
+   processed-message counts in logs; per-account dollar accounting would require
+   wrapping mem0's internal LLM client and is deferred until someone needs it.
 4. **Draft consumption** — swap `generate-draft.ts` to `memory.search`, evals comparing
    draft quality vs. the prompt-stuffing path (per repo rules: judge semantic failure
    modes, not wording).
