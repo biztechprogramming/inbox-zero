@@ -176,6 +176,10 @@ model EmailAccount {
   autoCategorizeSenders     Boolean              @default(false)
   multiRuleSelectionEnabled Boolean              @default(false)
   sensitiveDataPolicy       String?
+  // Sender addresses of shared queues (ticket systems, team aliases) whose
+  // mail addresses the user directly but isn't personal; knowledge extracted
+  // from it is scoped audience=list so it only surfaces when asked for.
+  knowledgeQueueSenders     String[]             @default([])
   draftReplyConfidence      DraftReplyConfidence @default(ALL_EMAILS)
   draftCleanupDays          Int?                 @default(14)
   allowHiddenAiDraftLinks   Boolean              @default(false)
