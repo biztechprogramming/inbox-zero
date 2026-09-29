@@ -338,6 +338,10 @@ export type EnableMultiRuleSelectionBody = z.infer<
   typeof enableMultiRuleSelectionBody
 >;
 
+export const updateSkipDraftRepliesInBulkBody = z.object({
+  skip: z.boolean(),
+});
+
 export const updateDraftReplyConfidenceBody = z.object({
   confidence: z.nativeEnum(DraftReplyConfidence),
 });

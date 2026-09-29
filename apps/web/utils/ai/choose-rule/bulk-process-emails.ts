@@ -1,3 +1,4 @@
+import PQueue from "p-queue";
 import prisma from "@/utils/prisma";
 import { createEmailProvider } from "@/utils/email/provider";
 import { runRules } from "@/utils/ai/choose-rule/run-rules";
@@ -29,7 +30,7 @@ export async function bulkProcessInboxEmails({
       logger,
     });
 
-    const [messages, rules] = await Promise.all([
+    const [messages, rules, settings] = await Promise.all([
       emailProvider.getInboxMessages(maxEmails),
       prisma.rule.findMany({
         where: {
@@ -39,6 +40,10 @@ export async function bulkProcessInboxEmails({
         include: {
           actions: true,
         },
+      }),
+      prisma.emailAccount.findUnique({
+        where: { id: emailAccount.id },
+        select: { skipDraftRepliesInBulk: true },
       }),
     ]);
 
@@ -63,28 +68,33 @@ export async function bulkProcessInboxEmails({
     let processedCount = 0;
     let errorCount = 0;
 
+    const queue = new PQueue({ concurrency: 10 });
     for (const message of uniqueMessages) {
-      try {
-        await runRules({
-          provider: emailProvider,
-          message,
-          rules,
-          emailAccount,
-          isTest: false,
-          modelType: "economy",
-          logger,
-          skipArchive,
-        });
-        processedCount++;
-      } catch (error) {
-        errorCount++;
-        logger.error("Error processing email", {
-          messageId: message.id,
-          error,
-        });
-        // Continue processing other emails even if one fails
-      }
+      queue.add(async () => {
+        try {
+          await runRules({
+            provider: emailProvider,
+            message,
+            rules,
+            emailAccount,
+            isTest: false,
+            modelType: "economy",
+            logger,
+            skipArchive,
+            skipDraftReplies: settings?.skipDraftRepliesInBulk ?? true,
+          });
+          processedCount++;
+        } catch (error) {
+          errorCount++;
+          logger.error("Error processing email", {
+            messageId: message.id,
+            error,
+          });
+          // Continue processing other emails even if one fails
+        }
+      });
     }
+    await queue.onIdle();
 
     logger.info("Completed bulk email processing", {
       processedCount,

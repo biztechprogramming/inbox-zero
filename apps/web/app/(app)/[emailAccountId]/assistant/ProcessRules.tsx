@@ -30,6 +30,7 @@ import { cn } from "@/utils";
 import { TestCustomEmailForm } from "@/app/(app)/[emailAccountId]/assistant/TestCustomEmailForm";
 import { ResultsDisplay } from "@/app/(app)/[emailAccountId]/assistant/ResultDisplay";
 import { useAccount } from "@/providers/EmailAccountProvider";
+import { useEmailAccountFull } from "@/hooks/useEmailAccountFull";
 import { FixWithChat } from "@/app/(app)/[emailAccountId]/assistant/FixWithChat";
 import { useChat } from "@/providers/ChatProvider";
 import { MutedText } from "@/components/Typography";
@@ -86,6 +87,8 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
 
   const { data: rules } = useRules();
   const { emailAccountId, userEmail } = useAccount();
+  const { data: emailAccount } = useEmailAccountFull();
+  const skipDraftRepliesInBulk = emailAccount?.skipDraftRepliesInBulk ?? true;
   const { tier } = usePremium();
 
   // Re-applying rules costs a fresh LLM call, so it's gated. Re-testing isn't:
@@ -141,7 +144,7 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
   }, [resultsMap, existingRules]);
 
   const onRun = useCallback(
-    async (message: Message, rerun?: boolean) => {
+    async (message: Message, rerun?: boolean, skipDraftReplies?: boolean) => {
       setIsRunning((prev) => ({ ...prev, [message.id]: true }));
 
       const result = await runRulesAction(emailAccountId, {
@@ -149,6 +152,7 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
         threadId: message.threadId,
         isTest: testMode,
         rerun,
+        skipDraftReplies,
       });
       const logContext = {
         emailAccountId,
@@ -190,8 +194,7 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
   const handleRunAll = async () => {
     handleStart();
 
-    // Create a queue with concurrency of 3 to maintain constant flow
-    const processQueue = new PQueue({ concurrency: 3 });
+    const processQueue = new PQueue({ concurrency: 10 });
 
     // Increment the page limit each time we run
     setCurrentPageLimit((prev) => prev + (testMode ? 1 : 10));
@@ -221,7 +224,7 @@ export function ProcessRulesContent({ testMode }: { testMode: boolean }) {
           if (!isRunningAllRef.current) return;
 
           try {
-            await onRun(message);
+            await onRun(message, undefined, skipDraftRepliesInBulk);
             handledThreadsRef.current.add(message.threadId);
           } catch (error) {
             console.error(`Failed to process message ${message.id}:`, error);

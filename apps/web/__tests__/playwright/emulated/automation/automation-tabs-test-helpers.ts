@@ -195,6 +195,7 @@ export async function seedAutomationSettings(emailAccountId: string) {
               "draftReplyConfidence"::text,
               "includeReferralSignature",
               "multiRuleSelectionEnabled",
+              "skipDraftRepliesInBulk",
               "sensitiveDataPolicy",
               signature,
               "writingStyle"
@@ -357,6 +358,7 @@ export async function getAutomationSettingsState(emailAccountId: string) {
       draftReplyConfidence: string;
       includeReferralSignature: boolean;
       multiRuleSelectionEnabled: boolean;
+      skipDraftRepliesInBulk: boolean;
       sensitiveDataPolicy: string | null;
       writingStyle: string | null;
     }>(

@@ -36,6 +36,7 @@ test("persists personalization, drafting, and advanced settings", async ({
   for (const heading of [
     "Auto draft replies",
     "Draft confidence",
+    "Skip drafts when bulk processing",
     "Writing style",
     "Personal instructions",
     "Email signature",
@@ -106,6 +107,18 @@ test("persists personalization, drafting, and advanced settings", async ({
     })
     .toMatchObject({ draftReplyConfidence: "HIGH_CONFIDENCE" });
 
+  const bulkDraftsItem = getAutomationSettingsCard(
+    page,
+    "Skip drafts when bulk processing",
+  );
+  await expect(bulkDraftsItem.getByRole("switch")).toBeChecked();
+  await bulkDraftsItem.getByRole("switch").click();
+  await expect
+    .poll(() => getAutomationSettingsState(emailAccountId), {
+      timeout: 60_000,
+    })
+    .toMatchObject({ skipDraftRepliesInBulk: false });
+
   const multiRuleItem = getAutomationSettingsCard(page, "Multi-rule selection");
   await multiRuleItem.getByRole("switch").click();
   await expect
@@ -151,6 +164,7 @@ test("persists personalization, drafting, and advanced settings", async ({
   await expect(draftConfidence).toContainText("High confidence", {
     timeout: 60_000,
   });
+  await expect(bulkDraftsItem.getByRole("switch")).not.toBeChecked();
   await expect(multiRuleItem.getByRole("switch")).toBeChecked();
   await expect(referralItem.getByRole("switch")).toBeChecked();
   await expect(hiddenLinksItem.getByRole("switch")).toBeChecked();

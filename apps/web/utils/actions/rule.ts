@@ -10,6 +10,7 @@ import {
   updateRuleSettingsBody,
   enableDraftRepliesBody,
   enableMultiRuleSelectionBody,
+  updateSkipDraftRepliesInBulkBody,
   updateDraftReplyConfidenceBody,
   deleteRuleBody,
   createRulesOnboardingBody,
@@ -276,6 +277,16 @@ export const enableMultiRuleSelectionAction = actionClient
     await prisma.emailAccount.update({
       where: { id: emailAccountId },
       data: { multiRuleSelectionEnabled: enable },
+    });
+  });
+
+export const updateSkipDraftRepliesInBulkAction = actionClient
+  .metadata({ name: "updateSkipDraftRepliesInBulk" })
+  .inputSchema(updateSkipDraftRepliesInBulkBody)
+  .action(async ({ ctx: { emailAccountId }, parsedInput: { skip } }) => {
+    await prisma.emailAccount.update({
+      where: { id: emailAccountId },
+      data: { skipDraftRepliesInBulk: skip },
     });
   });
 

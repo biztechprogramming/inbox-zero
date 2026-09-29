@@ -103,6 +103,11 @@ No prompt or tool descriptions change. The new surface is the Jev question and o
 - [x] Add an eval for `aiClean` (`__tests__/eval/clean.test.ts`, 22 cases); GPT-5.6 Luna gets 22/22
 - [x] Put Jev in front of `aiClean`, keep-only: a "keep" with archive probability below 0.5 (`JEV_CLEAN_KEEP_BELOW`) skips the LLM, and anything leaning archive goes to the LLM
 
+### Bulk processing speed
+- [x] "Run on All" (Automation → Test/Apply) and the server bulk run (`bulkProcessInboxEmails`) process 10 emails at a time; they were 3 and 1
+- [x] New setting "Skip drafts when bulk processing" (`EmailAccount.skipDraftRepliesInBulk`, on by default) in Automation → Settings; both bulk paths pass it as `skipDraftReplies`
+- [ ] Confirm `automation/settings-controls.spec.ts` passes (the local Playwright harness fails to start its Next.js server with `Cannot find package 'tsx .'`)
+
 ### Phase 3: rollout
 - [ ] Enable Jev for one account and watch the Jev and fallback ratio in logs
 - [ ] Confirm learned patterns still get created from Jev matches
