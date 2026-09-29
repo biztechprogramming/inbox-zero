@@ -50,6 +50,7 @@ describe("extractKnowledgeFromMessages", () => {
       user: {},
     });
     prisma.emailAccount.findUnique.mockResolvedValue({
+      knowledgeQueueSenders: [],
       account: { provider: "google" },
     } as any);
     prisma.emailMessage.update.mockResolvedValue({} as any);
@@ -126,6 +127,34 @@ describe("extractKnowledgeFromMessages", () => {
       expect.anything(),
       expect.objectContaining({
         metadata: expect.objectContaining({ audience }),
+      }),
+    );
+  });
+
+  it("classifies configured queue senders as list even when addressed to the user", async () => {
+    prisma.emailAccount.findUnique.mockResolvedValue({
+      knowledgeQueueSenders: ["support@queue.test"],
+      account: { provider: "google" },
+    } as never);
+    prisma.emailMessage.findMany.mockResolvedValue([candidate("m1") as never]);
+    getMessage.mockResolvedValue({
+      id: "msg",
+      headers: {
+        from: "Kirsty Courtney (Support) <support@queue.test>",
+        to: "user@test.com",
+      },
+    });
+
+    await extractKnowledgeFromMessages({
+      emailAccountId,
+      messageIds: ["m1"],
+      logger,
+    });
+
+    expect(memoryAdd).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        metadata: expect.objectContaining({ audience: "list" }),
       }),
     );
   });

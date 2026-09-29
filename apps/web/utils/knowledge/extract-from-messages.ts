@@ -1,4 +1,8 @@
-import { extractEmailAddresses, isSameEmailAddress } from "@/utils/email";
+import {
+  extractEmailAddress,
+  extractEmailAddresses,
+  isSameEmailAddress,
+} from "@/utils/email";
 import { createEmailProvider } from "@/utils/email/provider";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
 import type { ParsedMessage } from "@/utils/types";
@@ -56,12 +60,16 @@ export async function extractKnowledgeFromMessages({
 
   const account = await prisma.emailAccount.findUnique({
     where: { id: emailAccountId },
-    select: { account: { select: { provider: true } } },
+    select: {
+      knowledgeQueueSenders: true,
+      account: { select: { provider: true } },
+    },
   });
   if (!account?.account?.provider) {
     logger.warn("No provider for knowledge extraction account");
     return { processed: 0 };
   }
+  const queueSenders = account.knowledgeQueueSenders;
 
   const emailProvider = await createEmailProvider({
     emailAccountId,
@@ -100,6 +108,7 @@ export async function extractKnowledgeFromMessages({
                 message,
                 sent: candidate.sent,
                 userEmail: emailAccount.email,
+                queueSenders,
               }),
               // add()'s timestamp option is rejected by the OSS SDK (paid
               // platform feature), so the message date rides in metadata.
@@ -153,20 +162,33 @@ function markExtracted(
 }
 
 /**
- * Whether the user was personally addressed. Mail that reaches the mailbox
- * without the user in To/Cc came via a distribution list, alias, or bcc, and
- * ranks below personal mail in knowledge retrieval.
+ * Whether the user was personally addressed. Mail from a configured shared
+ * queue (ticket systems address every agent directly, so recipients can't
+ * distinguish it), and mail that reaches the mailbox without the user in
+ * To/Cc (distribution list, alias, bcc), rank below personal mail in
+ * knowledge retrieval.
  */
 function getAudience({
   message,
   sent,
   userEmail,
+  queueSenders,
 }: {
   message: ParsedMessage;
   sent: boolean;
   userEmail: string;
+  queueSenders: string[];
 }): "direct" | "cc" | "list" {
   if (sent) return "direct";
+
+  const from = message.headers.from ?? "";
+  if (
+    queueSenders.some((sender) =>
+      isSameEmailAddress(extractEmailAddress(from), sender),
+    )
+  ) {
+    return "list";
+  }
 
   const to = extractEmailAddresses(message.headers.to ?? "");
   if (to.some((address) => isSameEmailAddress(address, userEmail))) {
