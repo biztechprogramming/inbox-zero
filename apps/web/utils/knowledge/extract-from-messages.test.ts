@@ -143,6 +143,33 @@ describe("extractKnowledgeFromMessages", () => {
     );
   });
 
+  it("marks content-filtered messages done so they are not retried forever", async () => {
+    prisma.emailMessage.findMany.mockResolvedValue([candidate("m1") as never]);
+    memoryAdd.mockRejectedValueOnce(
+      new Error("wrapped", {
+        cause: Object.assign(new Error("400 filtered"), {
+          code: "content_filter",
+        }),
+      }),
+    );
+
+    await extractKnowledgeFromMessages({
+      emailAccountId,
+      messageIds: ["m1"],
+      logger,
+    });
+
+    expect(prisma.emailMessage.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: {
+          emailAccountId_threadId_messageId: expect.objectContaining({
+            messageId: "m1",
+          }),
+        },
+      }),
+    );
+  });
+
   it("does nothing when every message is already extracted or filtered", async () => {
     prisma.emailMessage.findMany.mockResolvedValue([]);
 

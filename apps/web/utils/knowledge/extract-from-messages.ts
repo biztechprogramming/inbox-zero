@@ -100,18 +100,19 @@ export async function extractKnowledgeFromMessages({
         );
       }
 
-      await prisma.emailMessage.update({
-        where: {
-          emailAccountId_threadId_messageId: {
-            emailAccountId,
-            threadId: candidate.threadId,
-            messageId: candidate.messageId,
-          },
-        },
-        data: { knowledgeExtractedAt: new Date() },
-      });
+      await markExtracted(emailAccountId, candidate);
       processed++;
     } catch (error) {
+      // A provider content-filter rejection is permanent for this message:
+      // mark it done so it doesn't become a poison message retried forever.
+      // Nothing was stored, which is the safe outcome for filtered content.
+      if (isContentFilterError(error)) {
+        logger.warn("Provider content filter rejected message; skipping", {
+          messageId: candidate.messageId,
+        });
+        await markExtracted(emailAccountId, candidate).catch(() => {});
+        continue;
+      }
       logger.error("Knowledge extraction failed for message", {
         error,
         messageId: candidate.messageId,
@@ -124,4 +125,31 @@ export async function extractKnowledgeFromMessages({
     candidates: candidates.length,
   });
   return { processed };
+}
+
+function markExtracted(
+  emailAccountId: string,
+  candidate: { threadId: string; messageId: string },
+) {
+  return prisma.emailMessage.update({
+    where: {
+      emailAccountId_threadId_messageId: {
+        emailAccountId,
+        threadId: candidate.threadId,
+        messageId: candidate.messageId,
+      },
+    },
+    data: { knowledgeExtractedAt: new Date() },
+  });
+}
+
+function isContentFilterError(error: unknown) {
+  for (
+    let current = error as { code?: unknown; cause?: unknown } | undefined;
+    current;
+    current = current.cause as { code?: unknown; cause?: unknown } | undefined
+  ) {
+    if (current.code === "content_filter") return true;
+  }
+  return false;
 }
