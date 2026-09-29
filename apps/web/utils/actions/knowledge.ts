@@ -100,12 +100,18 @@ export const backfillKnowledgeAction = actionClient
   .action(
     async ({
       ctx: { emailAccountId, logger },
-      parsedInput: { sinceMonths },
+      parsedInput: { sinceMonths, after, before },
     }) => {
       if (!isKnowledgeStoreEnabled()) {
         throw new SafeError("The knowledge store is not enabled.");
       }
 
-      return queueKnowledgeBackfill({ emailAccountId, sinceMonths, logger });
+      return queueKnowledgeBackfill({
+        emailAccountId,
+        sinceMonths,
+        after,
+        before,
+        logger,
+      });
     },
   );

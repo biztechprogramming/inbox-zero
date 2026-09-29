@@ -7,7 +7,7 @@ const {
   getEmbeddingProviderConfigs,
 } = vi.hoisted(() => ({
   testEnv: {
-    KNOWLEDGE_STORE_ENABLED: true,
+    NEXT_PUBLIC_KNOWLEDGE_STORE_ENABLED: true,
     DATABASE_URL: "postgresql://test:test@localhost:5432/test",
   },
   memoryConstructor: vi.fn(),
@@ -63,11 +63,11 @@ function setupProviders({
 describe("getKnowledgeMemory", () => {
   beforeEach(() => {
     vi.clearAllMocks();
-    testEnv.KNOWLEDGE_STORE_ENABLED = true;
+    testEnv.NEXT_PUBLIC_KNOWLEDGE_STORE_ENABLED = true;
   });
 
   it("returns null when the store is disabled", () => {
-    testEnv.KNOWLEDGE_STORE_ENABLED = false;
+    testEnv.NEXT_PUBLIC_KNOWLEDGE_STORE_ENABLED = false;
     setupProviders();
 
     expect(getKnowledgeMemory(getEmailAccount())).toBeNull();

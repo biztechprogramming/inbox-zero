@@ -188,7 +188,6 @@ const parsedEnv = createEnv({
     OPENAI_COMPATIBLE_AUTH_HEADER: z
       .enum(["authorization", "api-key"])
       .optional(),
-    KNOWLEDGE_STORE_ENABLED: booleanString.optional().default(false),
     CLI_LLM_ENABLED: booleanString.optional().default(false),
     CODEX_CLI_ALLOW_NPX: booleanString.optional().default(false),
     CODEX_CLI_PATH: z.string().optional(),
@@ -459,6 +458,9 @@ const parsedEnv = createEnv({
     NEXT_PUBLIC_TEAMS_ENABLED: booleanString.optional(),
     NEXT_PUBLIC_SMART_FILING_ENABLED: booleanString.optional(),
     NEXT_PUBLIC_CLEANER_ENABLED: booleanString.optional(),
+    NEXT_PUBLIC_KNOWLEDGE_STORE_ENABLED: booleanString
+      .optional()
+      .default(false),
     NEXT_PUBLIC_DELETE_EMAIL_ACTION_ENABLED: booleanString.optional(),
     NEXT_PUBLIC_INTEGRATION_ACTION_ENABLED: booleanString.optional(),
     NEXT_PUBLIC_BOOKING_LINKS_ENABLED: booleanString.optional(),
@@ -569,6 +571,8 @@ const parsedEnv = createEnv({
     NEXT_PUBLIC_SMART_FILING_ENABLED:
       process.env.NEXT_PUBLIC_SMART_FILING_ENABLED,
     NEXT_PUBLIC_CLEANER_ENABLED: process.env.NEXT_PUBLIC_CLEANER_ENABLED,
+    NEXT_PUBLIC_KNOWLEDGE_STORE_ENABLED:
+      process.env.NEXT_PUBLIC_KNOWLEDGE_STORE_ENABLED,
     NEXT_PUBLIC_DELETE_EMAIL_ACTION_ENABLED:
       process.env.NEXT_PUBLIC_DELETE_EMAIL_ACTION_ENABLED,
     NEXT_PUBLIC_INTEGRATION_ACTION_ENABLED:

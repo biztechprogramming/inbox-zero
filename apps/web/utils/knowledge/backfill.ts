@@ -18,10 +18,16 @@ export const DEFAULT_BACKFILL_MONTHS = 12;
 export async function queueKnowledgeBackfill({
   emailAccountId,
   sinceMonths = DEFAULT_BACKFILL_MONTHS,
+  after,
+  before,
   logger,
 }: {
   emailAccountId: string;
   sinceMonths?: number;
+  /** Explicit window start; defaults to `sinceMonths` ago. */
+  after?: Date;
+  /** Exclusive window end; unbounded when absent. */
+  before?: Date;
   logger: Logger;
 }) {
   if (!isKnowledgeStoreEnabled()) return { queued: 0 };
@@ -31,7 +37,10 @@ export async function queueKnowledgeBackfill({
       emailAccountId,
       knowledgeExtractedAt: null,
       draft: false,
-      date: { gte: subMonths(new Date(), sinceMonths) },
+      date: {
+        gte: after ?? subMonths(new Date(), sinceMonths),
+        ...(before && { lt: before }),
+      },
       OR: [{ aiCategory: null }, { aiCategory: { not: "newsletter" } }],
     },
     orderBy: { date: "desc" },

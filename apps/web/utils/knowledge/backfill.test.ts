@@ -55,6 +55,22 @@ describe("queueKnowledgeBackfill", () => {
     });
   });
 
+  it("bounds the window with an explicit date range when given", async () => {
+    prisma.emailMessage.findMany.mockResolvedValue([]);
+    const after = new Date("2026-01-01T00:00:00Z");
+    const before = new Date("2026-06-01T00:00:00Z");
+
+    await queueKnowledgeBackfill({
+      emailAccountId: "account-1",
+      after,
+      before,
+      logger,
+    });
+
+    const query = prisma.emailMessage.findMany.mock.calls[0][0];
+    expect(query?.where?.date).toEqual({ gte: after, lt: before });
+  });
+
   it("does nothing when the store is disabled", async () => {
     storeEnabled.value = false;
 
