@@ -2,9 +2,13 @@ import chunk from "lodash/chunk";
 import { z } from "zod";
 import { isKnowledgeStoreEnabled } from "@/utils/knowledge/config";
 import type { Logger } from "@/utils/logger";
-import { publishToQstashQueue } from "@/utils/upstash";
+import { enqueueBackgroundJob } from "@/utils/queue/dispatch";
 
-const KNOWLEDGE_EXTRACT_PREFIX = "knowledge-extract";
+// Static queue name (not per-account) so the BullMQ worker can subscribe to
+// it; per-account queue names would never be drained on self-hosted deploys.
+export const KNOWLEDGE_QUEUE_NAME = "knowledge-extract";
+export const KNOWLEDGE_QUEUE_PARALLELISM = 3;
+
 const BATCH_SIZE = 20;
 
 export const extractKnowledgeBody = z.object({
@@ -31,16 +35,15 @@ export async function queueKnowledgeExtraction({
   try {
     await Promise.all(
       chunk(messageIds, BATCH_SIZE).map((ids) =>
-        publishToQstashQueue({
-          queueName: `${KNOWLEDGE_EXTRACT_PREFIX}-${emailAccountId}`,
-          // Extraction calls the provider and an LLM per message; keep one
-          // job at a time per account so a large sync can't stampede either.
-          parallelism: 1,
-          path: "/api/knowledge/extract-batch",
-          body: {
-            emailAccountId,
-            messageIds: ids,
-          } satisfies ExtractKnowledgeBody,
+        enqueueBackgroundJob<ExtractKnowledgeBody>({
+          topic: KNOWLEDGE_QUEUE_NAME,
+          body: { emailAccountId, messageIds: ids },
+          qstash: {
+            queueName: KNOWLEDGE_QUEUE_NAME,
+            parallelism: KNOWLEDGE_QUEUE_PARALLELISM,
+            path: "/api/knowledge/extract-batch",
+          },
+          logger,
         }),
       ),
     );

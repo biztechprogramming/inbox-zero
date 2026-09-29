@@ -34,6 +34,22 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # BullMQ queue processor (requires QUEUE_BACKEND=bullmq in apps/web/.env).
+  # Jobs live in Redis, so stopping and restarting this container resumes
+  # queued work where it left off.
+  worker:
+    image: ${FULL_IMAGE:-ghcr.io/your-username/inbox-zero}:latest
+    command: ["/app/docker/scripts/start-worker.sh"]
+    env_file:
+      - ../apps/web/.env
+    environment:
+      REDIS_URL: redis://redis:6379
+      INTERNAL_API_URL: http://app:3000
+    depends_on:
+      redis:
+        condition: service_healthy
+    restart: unless-stopped
+
   db:
     image: pgvector/pgvector:pg16 # postgres 16 + the vector extension EmailMessage.embedding needs
     environment:
