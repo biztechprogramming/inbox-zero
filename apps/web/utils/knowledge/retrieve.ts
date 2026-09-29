@@ -4,6 +4,9 @@ import type { Logger } from "@/utils/logger";
 
 const KNOWLEDGE_TOP_K = 8;
 
+/** How the user received the source mail; "list" mail ranks below personal. */
+export type KnowledgeAudience = "direct" | "cc" | "list";
+
 export type KnowledgeItem = {
   fact: string;
   score?: number;
@@ -21,11 +24,14 @@ export async function searchKnowledgeItems({
   emailAccount,
   query,
   topK = KNOWLEDGE_TOP_K,
+  audience,
   logger,
 }: {
   emailAccount: EmailAccountWithAI;
   query: string;
   topK?: number;
+  /** Restrict to one audience; omit to search everything. */
+  audience?: KnowledgeAudience;
   logger: Logger;
 }): Promise<KnowledgeItem[]> {
   const memory = getKnowledgeMemory(emailAccount);
@@ -34,7 +40,7 @@ export async function searchKnowledgeItems({
   try {
     const { results } = await memory.search(query, {
       topK,
-      filters: { user_id: emailAccount.id },
+      filters: { user_id: emailAccount.id, ...(audience && { audience }) },
     });
 
     return results.map((item) => ({
