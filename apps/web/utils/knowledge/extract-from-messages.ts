@@ -90,11 +90,13 @@ export async function extractKnowledgeFromMessages({
           ],
           {
             userId: emailAccountId,
-            timestamp: candidate.date,
             metadata: {
               threadId: candidate.threadId,
               messageId: candidate.messageId,
               direction: candidate.sent ? "sent" : "received",
+              // add()'s timestamp option is rejected by the OSS SDK (paid
+              // platform feature), so the message date rides in metadata.
+              date: candidate.date.toISOString(),
             },
           },
         );

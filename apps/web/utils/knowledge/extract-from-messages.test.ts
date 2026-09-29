@@ -78,17 +78,21 @@ describe("extractKnowledgeFromMessages", () => {
     expect(memoryAdd).toHaveBeenCalledTimes(2);
     expect(memoryAdd).toHaveBeenCalledWith(expect.anything(), {
       userId: emailAccountId,
-      timestamp: candidate("m1").date,
       metadata: {
         threadId: "thread-m1",
         messageId: "m1",
         direction: "received",
+        date: candidate("m1").date.toISOString(),
       },
     });
     expect(memoryAdd).toHaveBeenCalledWith(expect.anything(), {
       userId: emailAccountId,
-      timestamp: candidate("m2").date,
-      metadata: { threadId: "thread-m2", messageId: "m2", direction: "sent" },
+      metadata: {
+        threadId: "thread-m2",
+        messageId: "m2",
+        direction: "sent",
+        date: candidate("m2").date.toISOString(),
+      },
     });
     expect(prisma.emailMessage.update).toHaveBeenCalledTimes(2);
 
