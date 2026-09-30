@@ -66,7 +66,7 @@ export async function handleMcpServerRequest(
     "search_knowledge",
     {
       description:
-        "Semantic search over durable facts extracted from one inbox account's email: contact details, commitments, the user's preferences and standing decisions, reference answers (pricing, policies), and how the user replies to particular audiences. Returns the most relevant facts with provenance metadata (source thread and message). Read-only. Returns an empty list when the knowledge store is disabled for this deployment or account. By default only mail personally addressed to the user is searched; pass audience to include mail the user received via distribution lists (e.g. a shared tech-support inbox) or cc.",
+        'Semantic search over durable facts extracted from one inbox account\'s email: contact details, commitments, the user\'s preferences and standing decisions, reference answers (pricing, policies), and how the user replies to particular audiences. Returns the most relevant facts with provenance metadata (source thread and message). Read-only. Returns an empty list when the knowledge store is disabled for this deployment or account. audience restricts results to exactly one way the user received the mail — the default "direct" searches only mail personally addressed to the user; "list" searches only distribution-list mail (e.g. a shared tech-support inbox); pass "any" to search everything.',
       inputSchema: {
         ...accountSelectorShape,
         query: z.string().describe("What to look for, in natural language."),
@@ -75,7 +75,7 @@ export async function handleMcpServerRequest(
           .enum(["direct", "cc", "list", "any"])
           .optional()
           .describe(
-            'How the user received the source mail. "direct" (default): addressed to the user. "cc": copied. "list": arrived via a distribution list or alias. "any": no restriction.',
+            'Restrict results to exactly one source. "direct" (default): only mail addressed to the user. "cc": only mail the user was copied on. "list": only mail via a distribution list or alias. "any": no restriction.',
           ),
       },
     },
