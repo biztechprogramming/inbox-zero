@@ -9,7 +9,7 @@ import type { EmailForLLM } from "@/utils/types";
 // Maximum knowledge: read the whole fresh fragment, not the enrichment
 // snippet. Quoted history is stripped upstream, so this bounds a single
 // message's own text.
-const MAX_CONTENT_LENGTH = 10_000;
+export const MAX_CONTENT_LENGTH = 10_000;
 
 const instructions = `You maintain structured knowledge about one user's mailbox, one email at a time. You are given the email (only the text it adds to its thread; quoted history is removed), the running summary of its thread so far, the thread's open items, and facts already stored on related topics.
 

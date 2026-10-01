@@ -14,7 +14,8 @@ vi.mock("@/utils/knowledge/memory", () => ({
 }));
 
 const analyzeMessageKnowledge = vi.fn();
-vi.mock("@/utils/knowledge/analyze-message", () => ({
+vi.mock("@/utils/knowledge/analyze-message", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("./analyze-message")>()),
   analyzeMessageKnowledge: (...args: unknown[]) =>
     analyzeMessageKnowledge(...args),
 }));
@@ -122,7 +123,8 @@ describe("extractThreadKnowledge", () => {
     // Long-thread contract: only the fresh fragment is analyzed.
     expect(getEmailForLLM).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ extractReply: true }),
+      // Maximum knowledge: the whole fragment, not the 2k default.
+      expect.objectContaining({ extractReply: true, maxLength: 10_000 }),
     );
     expect(analyzeMessageKnowledge).toHaveBeenCalledWith(
       expect.objectContaining({ knownFacts: ["known fact"] }),

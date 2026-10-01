@@ -19,6 +19,7 @@ import type { EmailProvider } from "@/utils/email/types";
 import { getEmailForLLM } from "@/utils/get-email-from-message";
 import {
   analyzeMessageKnowledge,
+  MAX_CONTENT_LENGTH,
   type MessageAnalysis,
 } from "@/utils/knowledge/analyze-message";
 import { getKnowledgeMemory } from "@/utils/knowledge/memory";
@@ -136,6 +137,7 @@ async function extractMessage(
 
   const message = await emailProvider.getMessage(candidate.messageId);
   const email = getEmailForLLM(message, {
+    maxLength: MAX_CONTENT_LENGTH,
     // Long-thread guard: only the text this message itself contributed.
     // Quoted history was already extracted from the messages it quotes.
     extractReply: true,
