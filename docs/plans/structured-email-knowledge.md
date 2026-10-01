@@ -181,8 +181,14 @@ cost per message stays at one LLM call:
 Mem0 writes switch to `add(facts, { infer: false })`: the facts are already
 extracted, and mem0 only embeds and stores them. mem0's LLM client is then
 never invoked, so `CUSTOM_INSTRUCTIONS` and the chat-provider mapping in
-`memory.ts` are deleted. Mem0 needs only an OpenAI-compatible **embedder**, so
-typed items, thread summaries, and ephemera filtering work on every provider.
+`memory.ts` are deleted. Embedding goes through mem0's `langchain`
+embedder hook, which accepts any object with `embedQuery`/`embedDocuments`.
+Backed by the app's own `getEmbeddingModel` and the AI SDK with a 30s abort,
+the store now works with every provider the app can embed with. A provider
+slowdown also can no longer stall a drain iteration: mem0's built-in OpenAI
+client waits up to 10 minutes per attempt, and during backfill #2 it stalled
+one iteration for 17 minutes. Typed items, thread summaries, and ephemera
+filtering need no embedder at all.
 
 ### Proposed extraction prompt (model-facing — needs approval)
 
