@@ -1,65 +1,56 @@
 import "@/utils/knowledge/mem0-telemetry";
+import { type EmbeddingModel, embed, embedMany } from "ai";
 import { Memory } from "mem0ai/oss";
 import { env } from "@/env";
 import { isKnowledgeStoreEnabled } from "@/utils/knowledge/config";
-import { Provider } from "@/utils/llms/config";
-import { getEmbeddingProviderConfigs } from "@/utils/llms/model";
-import type { EmailAccountWithAI, UserAIFields } from "@/utils/llms/types";
+import { getEmbeddingModel } from "@/utils/llms/model";
+import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { createScopedLogger } from "@/utils/logger";
 
 const logger = createScopedLogger("knowledge-memory");
 
 const KNOWLEDGE_COLLECTION = "knowledge_memories";
 const EMBEDDING_DIMS = 1536;
-
-// Facts are extracted by our own structured pass (analyze-message.ts) and
-// written with `infer: false`, so mem0 only embeds and stores: its LLM client
-// is never called and needs no config. The embedder routes through the
-// already-installed `openai` client against each provider's OpenAI-compatible
-// endpoint; providers without one disable the store for that account.
-const EMBEDDER_BASE_URLS: Record<string, string | undefined> = {
-  [Provider.OPEN_AI]: undefined,
-  [Provider.AI_GATEWAY]: "https://ai-gateway.vercel.sh/v1",
-  ...(env.AZURE_FOUNDRY_BASE_URL && {
-    [Provider.AZURE_FOUNDRY]: env.AZURE_FOUNDRY_BASE_URL,
-  }),
-};
+// mem0's own OpenAI client waits up to 10 minutes per attempt, which let a
+// provider slowdown stall an account's drain far past its lock.
+const EMBED_TIMEOUT_MS = 30_000;
 
 // One Memory per account: the pgvector pool is shared per instance and the
 // config only changes when the account's provider setup does.
 const memoryCache = new Map<string, { fingerprint: string; memory: Memory }>();
 
 /**
- * The Mem0 store for an account, or null when the store is disabled or the
- * account's embedding providers have no OpenAI-compatible endpoint. All
- * memories are scoped by `userId: emailAccountId`.
+ * The Mem0 store for an account, or null when the store is disabled or no
+ * configured provider can embed. All memories are scoped by
+ * `userId: emailAccountId`.
+ *
+ * Facts are extracted by our own structured pass (analyze-message.ts) and
+ * written with `infer: false`, so mem0 only embeds and stores: its LLM client
+ * is never called and needs no config.
  */
 export function getKnowledgeMemory(
   emailAccount: EmailAccountWithAI,
 ): Memory | null {
   if (!isKnowledgeStoreEnabled()) return null;
 
-  const embedder = getEmbedderConfig(emailAccount.user);
-  if (!embedder) {
-    logger.warn("Knowledge store unavailable: no compatible embedder", {
+  const model = getEmbeddingModel(emailAccount.user);
+  if (!model) {
+    logger.warn("Knowledge store unavailable: no embedding model", {
       email: emailAccount.email,
     });
     return null;
   }
 
-  const fingerprint = JSON.stringify(embedder);
+  const fingerprint = JSON.stringify(emailAccount.user);
   const cached = memoryCache.get(emailAccount.id);
   if (cached?.fingerprint === fingerprint) return cached.memory;
 
   const memory = new Memory({
     embedder: {
-      provider: "openai",
-      config: {
-        apiKey: embedder.apiKey,
-        model: embedder.modelId,
-        embeddingDims: EMBEDDING_DIMS,
-        ...(embedder.baseURL && { baseURL: embedder.baseURL }),
-      },
+      // mem0 accepts any object with this LangChain Embeddings shape, so the
+      // store embeds with the same models as the rest of the app.
+      provider: "langchain",
+      config: { model: createEmbeddings(model) },
     },
     vectorStore: {
       provider: "pgvector",
@@ -76,14 +67,23 @@ export function getKnowledgeMemory(
   return memory;
 }
 
-function getEmbedderConfig(userAi: UserAIFields) {
-  for (const candidate of getEmbeddingProviderConfigs(userAi)) {
-    if (!(candidate.provider in EMBEDDER_BASE_URLS)) continue;
-    return {
-      apiKey: candidate.apiKey,
-      modelId: candidate.modelId,
-      baseURL: EMBEDDER_BASE_URLS[candidate.provider],
-    };
-  }
-  return null;
+function createEmbeddings(model: EmbeddingModel) {
+  return {
+    embedQuery: async (value: string) =>
+      (
+        await embed({
+          model,
+          value,
+          abortSignal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+        })
+      ).embedding,
+    embedDocuments: async (values: string[]) =>
+      (
+        await embedMany({
+          model,
+          values,
+          abortSignal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+        })
+      ).embeddings,
+  };
 }
