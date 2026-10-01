@@ -93,6 +93,29 @@ export async function resolveSafeExternalHttpUrl(
   };
 }
 
+/**
+ * SSRF guard for non-HTTP destinations (IMAP/SMTP hosts). Rejects blocked
+ * hostnames and hosts that are, or resolve to, private/loopback IPs.
+ */
+export async function isSafeExternalHost(host: string): Promise<boolean> {
+  const hostname = normalizeHostname(host);
+  if (!hostname) return false;
+  if (isBlockedHostname(hostname)) return false;
+
+  const ipAddress = stripIpv6Brackets(hostname);
+  const ipVersion = isIP(ipAddress);
+  if (ipVersion === 4) return !isPrivateIpv4(ipAddress);
+  if (ipVersion === 6) return !isPrivateIpv6(ipAddress);
+
+  if (!hostname.includes(".")) return false;
+
+  try {
+    return (await resolvePublicAddresses(hostname, false)) !== null;
+  } catch {
+    return false;
+  }
+}
+
 export type ResolvedSafeExternalHttpUrl = {
   lookup: (
     hostname: string,

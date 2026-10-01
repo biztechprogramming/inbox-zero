@@ -9,6 +9,7 @@ import { MutedText } from "@/components/Typography";
 import { getAccountLinkingUrl } from "@/utils/account-linking";
 import { isGoogleProvider } from "@/utils/email/provider-types";
 import { redirectToSafeUrl } from "@/utils/redirect";
+import { ConnectImapDialog } from "@/app/(app)/accounts/ConnectImapDialog";
 
 export function AddAccount({
   helperText = "You will be billed for each account.",
@@ -75,6 +76,7 @@ export function AddAccount({
           />
           <span className="ml-2">Add Microsoft</span>
         </Button>
+        <ConnectImapDialog disabled={isLoadingGoogle || isLoadingMicrosoft} />
       </div>
 
       <MutedText>{helperText}</MutedText>

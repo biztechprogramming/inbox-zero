@@ -1,6 +1,7 @@
 import * as dns from "node:dns/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  isSafeExternalHost,
   isSafeExternalHttpUrl,
   resolveSafeExternalHttpUrl,
 } from "./safe-http-url";
@@ -163,5 +164,52 @@ describe("allowPrivateIps option (webhook sender opt-in only)", () => {
         allowPrivateIps: true,
       }),
     ).toBe(false);
+  });
+});
+
+describe("isSafeExternalHost (IMAP/SMTP hosts)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects localhost and private IP literals", async () => {
+    await expect(isSafeExternalHost("localhost")).resolves.toBe(false);
+    await expect(isSafeExternalHost("127.0.0.1")).resolves.toBe(false);
+    await expect(isSafeExternalHost("10.0.0.5")).resolves.toBe(false);
+    await expect(isSafeExternalHost("[::1]")).resolves.toBe(false);
+    await expect(isSafeExternalHost("printer.local")).resolves.toBe(false);
+  });
+
+  it("rejects dotless hostnames", async () => {
+    await expect(isSafeExternalHost("mailserver")).resolves.toBe(false);
+  });
+
+  it("allows public IP literals without DNS lookup", async () => {
+    await expect(isSafeExternalHost("8.8.8.8")).resolves.toBe(true);
+    expect(dns.lookup).not.toHaveBeenCalled();
+  });
+
+  it("rejects hostnames that resolve to private IPs", async () => {
+    vi.mocked(dns.lookup).mockResolvedValue([
+      { address: "192.168.1.10", family: 4 },
+    ] as Awaited<ReturnType<typeof dns.lookup>>);
+
+    await expect(isSafeExternalHost("imap.example.com")).resolves.toBe(false);
+  });
+
+  it("allows hostnames that resolve to public IPs", async () => {
+    vi.mocked(dns.lookup).mockResolvedValue([
+      { address: "93.184.216.34", family: 4 },
+    ] as Awaited<ReturnType<typeof dns.lookup>>);
+
+    await expect(isSafeExternalHost("imap.example.com")).resolves.toBe(true);
+  });
+
+  it("treats DNS failures as unsafe", async () => {
+    vi.mocked(dns.lookup).mockRejectedValue(
+      Object.assign(new Error("not found"), { code: "ENOTFOUND" }),
+    );
+
+    await expect(isSafeExternalHost("imap.example.com")).resolves.toBe(false);
   });
 });

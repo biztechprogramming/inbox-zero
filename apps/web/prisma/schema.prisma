@@ -30,9 +30,27 @@ model Account {
   session_state         String?
   user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
   emailAccount          EmailAccount?
+  imapConnection        ImapConnection?
 
   @@unique([provider, providerAccountId])
   @@index([userId])
+}
+
+// IMAP/SMTP server settings for accounts with provider = "imap".
+// Passwords are encryptToken() ciphertext; never log or return them to the client.
+model ImapConnection {
+  id           String   @id @default(cuid())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  accountId    String   @unique
+  account      Account  @relation(fields: [accountId], references: [id], onDelete: Cascade)
+  imapHost     String
+  imapPort     Int
+  smtpHost     String
+  smtpPort     Int
+  username     String
+  imapPassword String
+  smtpPassword String? // null = same credentials as IMAP
 }
 
 model Session {
