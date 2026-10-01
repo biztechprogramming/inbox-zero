@@ -14,12 +14,16 @@ import {
   takeDrainDirtyFlag,
 } from "@/utils/knowledge/extract-queue";
 import type { Logger } from "@/utils/logger";
+import { mapWithConcurrency } from "@/utils/async";
 import prisma from "@/utils/prisma";
 import { acquireOwnedLock, clearOwnedLock } from "@/utils/redis/owned-lock";
 
-// Each message costs a provider fetch plus an LLM call, so one iteration must
-// fit well inside the route's 300s budget even when slow.
-export const DRAIN_BATCH_SIZE = 10;
+// Each message costs a provider fetch plus an LLM call (~4s). One iteration
+// must fit well inside the route's 300s budget even if every message lands
+// in a single thread, which runs sequentially.
+export const DRAIN_BATCH_SIZE = 15;
+// Outlook allows 4 concurrent requests per mailbox.
+const THREAD_CONCURRENCY = 3;
 // Outlives the route's max duration, so a killed iteration frees the lock.
 const LOCK_TTL_SECONDS = 360;
 
@@ -114,34 +118,49 @@ async function drainBatch({
   `;
   const pendingByThread = groupBy(pending, (message) => message.threadId);
 
+  // Whole threads while they fit; the first that doesn't gets the rest of
+  // the budget and is resumed by the next iteration.
   let budget = DRAIN_BATCH_SIZE;
-  let processed = 0;
-  let nextCursor = cursor;
-  // A full page of threads may have more below it; a short one that was
-  // fully visited means this pass is done.
-  let more = threads.length === DRAIN_BATCH_SIZE;
+  const batches: {
+    thread: (typeof threads)[number];
+    messages: PendingMessage[];
+    partial: boolean;
+  }[] = [];
   for (const thread of threads) {
-    const messages = pendingByThread[thread.threadId] ?? [];
-    const batch = messages.slice(0, budget);
-    budget -= batch.length;
+    if (budget <= 0) break;
+    const pendingInThread = pendingByThread[thread.threadId] ?? [];
+    const messages = pendingInThread.slice(0, budget);
+    budget -= messages.length;
+    batches.push({
+      thread,
+      messages,
+      partial: messages.length < pendingInThread.length,
+    });
+  }
 
-    const result = await extractThreadKnowledge({ context, messages: batch });
-    processed += result.processed;
+  // Order only matters inside a thread, so threads run side by side.
+  const results = await mapWithConcurrency(
+    batches,
+    THREAD_CONCURRENCY,
+    ({ messages }) => extractThreadKnowledge({ context, messages }),
+  );
 
-    // Out of budget mid-thread: leave the cursor above it so the next
-    // iteration resumes the same thread. A failed thread is passed over;
-    // its remaining messages are retried by the next pass.
-    if (!result.failed && batch.length < messages.length) {
+  // The cursor may only pass a prefix of finished threads: a partial thread
+  // must be selected again. A failed thread counts as finished; its
+  // remaining messages are retried by the next pass. A full page of threads,
+  // or one the budget didn't reach, may have more below it.
+  let nextCursor = cursor;
+  let more =
+    threads.length === DRAIN_BATCH_SIZE || batches.length < threads.length;
+  for (const [index, { thread, partial }] of batches.entries()) {
+    if (partial && !results[index].failed) {
       more = true;
       break;
     }
     nextCursor = { date: thread.latest, threadId: thread.threadId };
-    if (budget <= 0) {
-      more = true;
-      break;
-    }
   }
 
+  const processed = results.reduce((sum, result) => sum + result.processed, 0);
   logger.info("Knowledge drain batch done", {
     processed,
     threads: threads.length,

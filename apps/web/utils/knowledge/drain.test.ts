@@ -156,6 +156,22 @@ describe("runKnowledgeDrain", () => {
     expect(clearDrainDirtyFlag).not.toHaveBeenCalled();
   });
 
+  it("keeps the cursor before a thread too long for one iteration", async () => {
+    mockPending(
+      [thread("t1", 20), thread("t2", 10)],
+      [...messages("t1", DRAIN_BATCH_SIZE + 2), ...messages("t2", 1)],
+    );
+
+    const result = await runKnowledgeDrain({ emailAccountId, logger });
+
+    expect(result.status).toBe("continuing");
+    expect(extractThreadKnowledge).toHaveBeenCalledTimes(1);
+    expect(enqueueKnowledgeDrain).toHaveBeenCalledWith({
+      body: { emailAccountId, cursor: undefined },
+      logger,
+    });
+  });
+
   it("moves past a failed thread so one poison message can't stall the drain", async () => {
     mockPending(
       [thread("t1", 20), thread("t2", 10)],

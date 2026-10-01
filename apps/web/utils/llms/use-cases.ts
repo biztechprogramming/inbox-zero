@@ -78,7 +78,7 @@ export const LLM_USE_CASE_MODEL_TYPES = {
   [LlmUseCase.EmailReportSummaryGeneration]: "economy",
   [LlmUseCase.EmailReportUserPersona]: "default",
   [LlmUseCase.FindSnippets]: "chat",
-  [LlmUseCase.KnowledgeExtraction]: "economy",
+  [LlmUseCase.KnowledgeExtraction]: "default",
   [LlmUseCase.LearnedWritingStyleCompaction]: "economy",
   [LlmUseCase.McpAgent]: "economy",
   [LlmUseCase.MeetingBriefing]: "default",

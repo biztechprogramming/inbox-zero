@@ -241,6 +241,15 @@ async function extractMessage(
     );
   }
 
+  context.logger.info("Knowledge extracted from message", {
+    messageId: candidate.messageId,
+    ephemeral: analysis.ephemeral,
+    late,
+    facts: changes.facts.length,
+    newItems: changes.newItems.length,
+    resolvedItems: changes.resolvedItemIds.length,
+  });
+
   const now = new Date();
   await prisma.$transaction([
     prisma.emailItem.createMany({

@@ -14,7 +14,8 @@ import { applyGuards } from "@/utils/knowledge/extract-from-messages";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 
 // pnpm test-ai eval/knowledge-message-analysis
-// Production model: EVAL_MODELS='[{"provider":"azure-foundry","model":"gpt-5.4-nano","label":"GPT-5.4 Nano Azure"}]'
+// Runs on the "default" tier. GPT-5.4 Nano (economy) consistently fails the
+// repeated-open-item and envelope-facts cases, which is why it isn't used.
 
 vi.mock("server-only", () => ({}));
 
@@ -55,6 +56,30 @@ describe.runIf(shouldRunEval)("Eval: knowledge message analysis", () => {
 
         const pass = result.ephemeral;
         record("ticket status ping", pass, result);
+        expect(pass).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    test(
+      "keeps an automated email that asks the user to act by a date",
+      async () => {
+        const result = await analyze(emailAccount, {
+          from: "Northwind Billing <no-reply@billing.northwind.example>",
+          subject: "Action required: support contract renewal",
+          content:
+            "Your annual support contract ends on October 15, 2026. To avoid a lapse in coverage, approve the renewal quote in the customer portal before then. This is an automated message; replies are not monitored.",
+        });
+
+        const item = guard(result).newItems.find(
+          (candidate) => candidate.type !== "DECISION",
+        );
+        const pass =
+          !result.ephemeral &&
+          !!item &&
+          item.owner !== "THEM" &&
+          isDate(item.dueDate, "2026-10-15");
+        record("automated email asking the user to act", pass, result);
         expect(pass).toBe(true);
       },
       TIMEOUT,
@@ -217,6 +242,133 @@ describe.runIf(shouldRunEval)("Eval: knowledge message analysis", () => {
         const pass = !result.ephemeral && judged.pass;
         record("new contact facts", pass, result.facts);
         expect(pass).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    test(
+      "keeps contact details from a person's reply sent through a ticket system",
+      async () => {
+        const email = {
+          from: "Acme Helpdesk <support@helpdesk.example>",
+          subject: "[End-user Reply] Re: SSO application access request",
+          content:
+            "##- Please type your reply above this line -##\n\nDana Whitfield (Acme)\nSep 29, 2026, 10:12 AM PDT\n\nAll set now, thank you for the quick help!\n\nDana Whitfield | Operations Manager\nAcme Marketing\nc: 214-555-0140\n\nThis email is a service from Acme Helpdesk.",
+        };
+        const result = await analyze(emailAccount, email);
+
+        const judged = await judgeBinary({
+          input: email.content,
+          output: guard(result).facts.join("\n") || "(no facts)",
+          criterion: {
+            name: "Signature contact facts",
+            description:
+              "The facts record Dana Whitfield's role (Operations Manager at Acme Marketing) and her phone number.",
+          },
+        });
+        record("contact details via ticket system", judged.pass, result);
+        expect(judged.pass).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    test(
+      "records a request the user sends to several people once, as waiting on them",
+      async () => {
+        const result = await analyze(emailAccount, {
+          sent: true,
+          from: emailAccount.email,
+          to: `${COLLEAGUE}, ${CLIENT}, priya@acme.example`,
+          subject: "Launch plan review",
+          content:
+            "Hi all, the Q3 launch plan draft is in the shared folder. Please review it and send me your changes by Friday so I can finalize it.",
+          date: new Date("2026-09-14T15:00:00Z"),
+        });
+
+        const requests = guard(result, [COLLEAGUE, CLIENT]).newItems.filter(
+          (item) => item.type === "REQUEST",
+        );
+        const pass = requests.length === 1 && requests[0].owner === "THEM";
+        record("user's request to several people", pass, result.newItems);
+        expect(pass).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    test(
+      "does not repeat an obligation that is already open",
+      async () => {
+        const result = await analyze(emailAccount, {
+          from: `Sam Lee <${COLLEAGUE}>`,
+          subject: "Re: Figma seat for Morgan",
+          content:
+            "Following up on this: Morgan still needs the paid Figma seat by end of day tomorrow for the Harbor Lights campaign work.",
+          date: new Date("2026-09-28T16:00:00Z"),
+          threadSummary:
+            "Sam asked the user's team to set up a paid Figma seat for Morgan by September 29.",
+          openItems: [
+            {
+              ...openItem(
+                "item-d",
+                "REQUEST",
+                "ME",
+                "Sam asked the user to set up a paid Figma seat for Morgan.",
+              ),
+              dueDate: new Date("2026-09-29T00:00:00Z"),
+            },
+          ],
+        });
+
+        // Replacing the item (resolve + re-add) is also correct.
+        const pass =
+          result.newItems.length === 0 ||
+          result.resolvedItemIds.includes("item-d");
+        record("no repeated open item", pass, result);
+        expect(pass).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    test(
+      "does not record a status update as a decision",
+      async () => {
+        const result = await analyze(emailAccount, {
+          from: `Sam Lee <${COLLEAGUE}>`,
+          subject: "Re: Offboarding - Jordan Reyes",
+          content:
+            "Quick update: Jordan's account has been disabled. The laptop return is still pending.",
+        });
+
+        const pass = !result.newItems.some((item) => item.type === "decision");
+        record("status update is not a decision", pass, result.newItems);
+        expect(pass).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    test(
+      "keeps the email's envelope and meeting logistics out of facts",
+      async () => {
+        const email = {
+          from: `Sam Lee <${COLLEAGUE}>`,
+          to: `${emailAccount.email}, priya@acme.example`,
+          subject: "Pitch list prototype review",
+          content:
+            "Hi both, let's review the pitch list prototype on Thursday. Join on your computer: https://teams.example/l/meetup-join/19%3ameeting_abc. Or call in: +1 508-555-0199, Phone conference ID: 893 258 845#. Agenda: walk through the prototype and agree the feature tracker.",
+        };
+        const result = await analyze(emailAccount, email);
+
+        const judged = await judgeBinary({
+          input: email.content,
+          output: result.facts.join("\n") || "(no facts)",
+          criterion: {
+            name: "No envelope or logistics facts",
+            description:
+              "None of the facts merely restates who sent this email to whom or when, and none records one-off meeting logistics such as join links, dial-in numbers, or conference IDs. No facts at all also passes.",
+          },
+        });
+        record("no envelope or logistics facts", judged.pass, result.facts);
+        expect(judged.pass).toBe(true);
       },
       TIMEOUT,
     );
