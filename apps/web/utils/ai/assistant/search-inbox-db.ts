@@ -8,7 +8,7 @@ export type DbSearchFilters = {
   text?: string;
   from?: string;
   read?: boolean;
-  hasAttachments?: true;
+  hasAttachments?: boolean;
   inbox?: true;
   sent?: true;
   after?: Date;
@@ -152,8 +152,8 @@ export async function searchEmailMessages({
   if (filters.read !== undefined) {
     conditions.push(Prisma.sql`"read" = ${filters.read}`);
   }
-  if (filters.hasAttachments) {
-    conditions.push(Prisma.sql`"hasAttachments" = true`);
+  if (filters.hasAttachments !== undefined) {
+    conditions.push(Prisma.sql`"hasAttachments" = ${filters.hasAttachments}`);
   }
   if (filters.inbox) conditions.push(Prisma.sql`"inbox" = true`);
   if (filters.sent) conditions.push(Prisma.sql`"sent" = true`);

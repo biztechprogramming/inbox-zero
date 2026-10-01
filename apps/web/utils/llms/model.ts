@@ -640,27 +640,6 @@ export function getEmbeddingModel(userAi: UserAIFields) {
   return null;
 }
 
-/**
- * Raw embedding provider configs in the deployment's fallback order, for
- * callers that drive an external SDK (Mem0) rather than an ai-SDK model.
- * Same candidate walk as `getEmbeddingModel`, same 1536-dimension guarantee.
- */
-export function* getEmbeddingProviderConfigs(userAi: UserAIFields) {
-  for (const { provider, aiApiKey } of getEmbeddingProviderCandidates(userAi)) {
-    const modelId = EMBEDDING_MODEL_ID_BY_PROVIDER[provider];
-    const apiKey = resolveApiKey(aiApiKey, getProviderApiKey(provider));
-    if (modelId && apiKey) yield { provider, modelId, apiKey };
-  }
-}
-
-/** Resolves an API key the way model selection does: user key, then env key. */
-export function resolveProviderApiKey(
-  provider: string,
-  userApiKey?: string | null,
-) {
-  return resolveApiKey(userApiKey, getProviderApiKey(provider));
-}
-
 function* getEmbeddingProviderCandidates(userAi: UserAIFields) {
   if (userAi.aiProvider) {
     yield { provider: userAi.aiProvider, aiApiKey: userAi.aiApiKey };

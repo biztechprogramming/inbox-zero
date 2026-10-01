@@ -8,6 +8,13 @@ database (azure-foundry provider; add → extraction → scoped search → tenan
 Still pending: shadow-mode bake-in on real mail, draft-quality evals,
 `Knowledge`/`ReplyMemory` migration (phase 5 remainder), and the performance phase (6).
 
+Superseded in part by [structured-email-knowledge.md](./structured-email-knowledge.md):
+extraction is now one structured LLM pass per message (typed items, thread
+summaries, ephemera filtering) that writes facts to Mem0 with `infer: false`,
+and sync and backfill both feed a per-account, thread-ordered drain. The
+sections below on mem0's internal extraction and `CUSTOM_INSTRUCTIONS`
+describe the earlier design.
+
 Directive: **maximum knowledge first, maximum performance second.** Capture breadth
 (all fact-bearing mail, full history backfill) before optimizing retrieval quality
 and latency (reranker, indexes, hybrid search).

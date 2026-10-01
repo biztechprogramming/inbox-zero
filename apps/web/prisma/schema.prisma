@@ -228,6 +228,7 @@ model EmailAccount {
   cleanupJobs         CleanupJob[]
   cleanupThreads      CleanupThread[]
   emailMessages       EmailMessage[]
+  emailItems          EmailItem[]
   emailTokens         EmailToken[]
   knowledge           Knowledge[]
   snippets            Snippet[]
@@ -1110,6 +1111,13 @@ model EmailMessage {
   // Set once durable facts from this message have been stored in the Mem0
   // knowledge store; null means extraction is still pending (or gated off).
   knowledgeExtractedAt DateTime?
+  // Set when the message is queued for knowledge extraction (sync or
+  // backfill). Pending work = requested and not yet extracted.
+  knowledgeRequestedAt DateTime?
+  // Where the thread stands as of this message. Written only when the message
+  // was processed in thread order, so the thread's latest non-null value is
+  // its current summary.
+  threadSummary        String?
   // The ivfflat index on `embedding` lives only in the migration SQL: Prisma has
   // no `@@index` type for it. Check that `prisma migrate dev` has not generated a
   // DROP for `EmailMessage_embedding_idx` before committing a new migration.
@@ -1123,8 +1131,44 @@ model EmailMessage {
   @@index([emailAccountId, date])
   @@index([emailAccountId, from])
   @@index([emailAccountId, fromName])
+  @@index([emailAccountId, knowledgeExtractedAt])
   @@index([labels], type: Gin)
   @@index([searchVector], type: Gin)
+}
+
+// Typed items extracted from email that have a lifecycle (commitments,
+// requests, deadlines) or are listed by time (decisions). Timeless background
+// facts live in the Mem0 store instead.
+model EmailItem {
+  id        String          @id @default(cuid())
+  createdAt DateTime        @default(now())
+  updatedAt DateTime        @updatedAt
+  type      EmailItemType
+  // Actionable types: OPEN until later mail completes, answers, cancels, or
+  // supersedes it. Decisions: OPEN while in effect.
+  status    EmailItemStatus @default(OPEN)
+  text      String
+  // ME: the user must act or made the promise. Null for decisions.
+  owner     EmailItemOwner?
+
+  counterpartyEmail String?
+  counterpartyName  String?
+  dueDate           DateTime? @db.Date
+
+  threadId   String
+  messageId  String
+  sourceDate DateTime
+  audience   EmailAudience
+
+  resolvedAt          DateTime?
+  resolvedByMessageId String?
+
+  emailAccountId String
+  emailAccount   EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+
+  @@index([emailAccountId, status, dueDate])
+  @@index([emailAccountId, threadId])
+  @@index([emailAccountId, type, sourceDate])
 }
 
 model ResponseTime {
@@ -2219,6 +2263,29 @@ enum CategoryFilterType {
 enum LogicalOperator {
   AND
   OR
+}
+
+enum EmailItemType {
+  COMMITMENT
+  REQUEST
+  DEADLINE
+  DECISION
+}
+
+enum EmailItemStatus {
+  OPEN
+  RESOLVED
+}
+
+enum EmailItemOwner {
+  ME
+  THEM
+}
+
+enum EmailAudience {
+  DIRECT // the user is in To (or sent it)
+  CC
+  LIST // distribution list, alias, bcc, or a configured shared queue
 }
 
 enum ThreadTrackerType {
