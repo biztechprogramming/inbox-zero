@@ -32,6 +32,11 @@ import { isDraftReplyActionType } from "@/utils/actions/draft-reply";
 
 const logger = createTestLogger();
 
+// The real call POSTs to NEXT_PUBLIC_BASE_URL, which is a live dev server on
+// machines that run one.
+vi.mock("@/utils/ai/choose-rule/analyze-sender-pattern", () => ({
+  analyzeSenderPattern: vi.fn(),
+}));
 vi.mock("@/utils/prisma");
 vi.mock("@/utils/ai/choose-rule/match-rules", () => ({
   findMatchingRules: vi.fn(),
