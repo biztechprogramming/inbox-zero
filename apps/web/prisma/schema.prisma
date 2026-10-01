@@ -53,6 +53,42 @@ model ImapConnection {
   smtpPassword String? // null = same credentials as IMAP
 }
 
+// Per-folder IMAP sync state. UIDs are 32-bit unsigned, hence BigInt.
+model ImapFolder {
+  id             String       @id @default(cuid())
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+  emailAccountId String
+  emailAccount   EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+  path           String
+  uidValidity    BigInt
+  lastSeenUid    BigInt       @default(0)
+  specialUse     String? // \Sent, \Trash, \Archive, \Junk, \Drafts
+
+  @@unique([emailAccountId, path])
+}
+
+// Maps the stable public message id (normalized RFC822 Message-ID) to the
+// message's current IMAP location. IMAP UIDs are per-folder and change on
+// moves, so nothing outside utils/imap may reference folder+UID directly.
+model ImapMessage {
+  id              String       @id @default(cuid())
+  createdAt       DateTime     @default(now())
+  updatedAt       DateTime     @updatedAt
+  emailAccountId  String
+  emailAccount    EmailAccount @relation(fields: [emailAccountId], references: [id], onDelete: Cascade)
+  messageIdHeader String
+  threadId        String
+  folderPath      String
+  uid             BigInt
+  flags           String[]
+  internalDate    DateTime
+
+  @@unique([emailAccountId, messageIdHeader])
+  @@index([emailAccountId, threadId])
+  @@index([emailAccountId, folderPath, uid])
+}
+
 model Session {
   id              String   @id @default(cuid())
   sessionToken    String   @unique
@@ -241,6 +277,8 @@ model EmailAccount {
   cleanupJobs         CleanupJob[]
   cleanupThreads      CleanupThread[]
   emailMessages       EmailMessage[]
+  imapFolders         ImapFolder[]
+  imapMessages        ImapMessage[]
   emailTokens         EmailToken[]
   knowledge           Knowledge[]
   snippets            Snippet[]

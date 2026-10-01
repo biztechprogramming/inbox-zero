@@ -44,7 +44,8 @@ async function getEmailAccountsToWatch(userIds: string[] | null) {
     where: {
       ...(userIds ? { userId: { in: userIds } } : {}),
       ...getPremiumUserFilter(),
-      account: { disconnectedAt: null },
+      // IMAP accounts have no watch/webhook support; the imap-poll cron covers them.
+      account: { disconnectedAt: null, provider: { not: "imap" } },
     },
     select: {
       id: true,

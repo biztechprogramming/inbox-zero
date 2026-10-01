@@ -23,7 +23,9 @@ import {
   isMicrosoftProvider,
 } from "@/utils/email/provider-types";
 
-const webhookEmailAccountSelect = {
+// Also used by the IMAP poll cron, which feeds the same processHistoryItem
+// pipeline that webhook deliveries do.
+export const webhookEmailAccountSelect = {
   id: true,
   email: true,
   userId: true,

@@ -105,7 +105,7 @@ export function ConnectImapDialog({ disabled }: { disabled?: boolean }) {
               type="number"
               name="imapPort"
               label="IMAP port"
-              registerProps={register("imapPort")}
+              registerProps={register("imapPort", { valueAsNumber: true })}
               error={errors.imapPort}
             />
           </div>
@@ -124,7 +124,7 @@ export function ConnectImapDialog({ disabled }: { disabled?: boolean }) {
               type="number"
               name="smtpPort"
               label="SMTP port"
-              registerProps={register("smtpPort")}
+              registerProps={register("smtpPort", { valueAsNumber: true })}
               error={errors.smtpPort}
             />
           </div>

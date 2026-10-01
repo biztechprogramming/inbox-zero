@@ -6,7 +6,7 @@ const host = z
   .min(1, "Host is required")
   .max(255)
   .regex(/^[a-zA-Z0-9.\-:[\]]+$/, "Invalid host");
-const port = z.coerce.number().int().min(1).max(65_535);
+const port = z.number().int().min(1).max(65_535);
 
 export const connectImapAccountBody = z.object({
   email: z.string().trim().email("Invalid email address"),

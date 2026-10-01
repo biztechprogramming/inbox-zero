@@ -40,6 +40,7 @@
     "test-e2e": "cross-env RUN_E2E_TESTS=true vitest --run",
     "test-e2e:flows": "cross-env RUN_E2E_FLOW_TESTS=true vitest --run --dir __tests__/e2e/flows --no-file-parallelism",
     "test-integration": "cross-env RUN_INTEGRATION_TESTS=true vitest --run --dir __tests__/integration",
+    "test-imap": "cross-env RUN_IMAP_TESTS=true vitest --run --dir __tests__/imap",
     "test:mail-loading": "node __tests__/playwright/mail-simulation/run.mjs"
   },
   "dependencies": {

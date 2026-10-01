@@ -105,6 +105,10 @@
       "schedule": "0 * * * *"
     },
     {
+      "path": "/api/cron/imap-poll",
+      "schedule": "*/2 * * * *"
+    },
+    {
       "path": "/api/resend/digest/all",
       "schedule": "*/5 * * * *"
     },
