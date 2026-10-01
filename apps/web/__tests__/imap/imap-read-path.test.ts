@@ -40,9 +40,12 @@ const config: ImapAccountConfig = {
   port: IMAPS_PORT,
   username: "user1",
   password: "pass1",
+  email: "user1@example.com",
   smtpHost: "127.0.0.1",
   smtpPort: 13_465,
   smtpPassword: "pass1",
+  // GreenMail's 3465 is implicit-TLS SMTPS on a non-standard port.
+  smtpSecure: true,
   // GreenMail uses a self-signed certificate.
   tls: { rejectUnauthorized: false },
 };
@@ -295,6 +298,92 @@ describe.skipIf(!RUN_IMAP_TESTS)("IMAP read path against GreenMail", () => {
       logger,
     });
     expect(messageRows.get("root@test.example")?.flags).toContain("\\Seen");
+  }, 60_000);
+
+  it("sends over SMTP with a Sent copy, replies in-thread, archives, reads, trashes, and drafts", async () => {
+    const client = await session.getClient();
+    const provider = new ImapProvider(config, EMAIL_ACCOUNT_ID, logger);
+
+    // Send: SMTP delivery plus a copy appended to the Sent folder.
+    const sent = await provider.sendEmail({
+      to: "dest@test.example",
+      subject: "Outbound hello",
+      messageText: "sent body",
+    });
+    expect(sent.messageId).toBeTruthy();
+    const sentRow = messageRows.get(sent.messageId);
+    expect(sentRow?.folderPath.toLowerCase()).toContain("sent");
+    const sentCopy = await provider.getMessage(sent.messageId);
+    expect(sentCopy.subject).toBe("Outbound hello");
+    expect(provider.isSentMessage(sentCopy)).toBe(true);
+
+    // Receive a message via the poll path.
+    await syncFolderNewMessages({
+      client,
+      emailAccountId: EMAIL_ACCOUNT_ID,
+      folderPath: "INBOX",
+      logger,
+    }); // baseline for this test's fresh in-memory store
+    await client.append(
+      "INBOX",
+      rawMessage({
+        messageId: "<towrite@test.example>",
+        subject: "Archive me",
+        body: "please archive",
+      }),
+      [],
+    );
+    const sync = await syncFolderNewMessages({
+      client,
+      emailAccountId: EMAIL_ACCOUNT_ID,
+      folderPath: "INBOX",
+      logger,
+    });
+    expect(sync.messages).toHaveLength(1);
+    const received = sync.messages[0];
+
+    // Reply joins the received message's thread and lands in Sent.
+    const reply = await provider.replyToEmail(received, "my reply");
+    expect(messageRows.get(reply.messageId)?.threadId).toBe(received.threadId);
+    expect(
+      messageRows.get(reply.messageId)?.folderPath.toLowerCase(),
+    ).toContain("sent");
+
+    // Mark read.
+    await provider.markMessagesReadState([received.id], true);
+    expect(messageRows.get(received.id)?.flags).toContain("\\Seen");
+
+    // Archive = move out of INBOX (creates the Archive folder on demand).
+    await provider.archiveMessage(received.id);
+    expect(messageRows.get(received.id)?.folderPath).toBe("Archive");
+    const archived = await provider.getMessage(received.id);
+    expect(archived.labelIds).not.toContain("INBOX");
+    const inboxSearch = await provider.searchMessages({
+      query: "Archive me",
+      maxResults: 10,
+    });
+    expect(inboxSearch.messages).toHaveLength(0);
+
+    // Trash the thread from the Archive folder.
+    await provider.trashThread(received.threadId, "user1@example.com", "user");
+    expect(messageRows.get(received.id)?.folderPath.toLowerCase()).toContain(
+      "trash",
+    );
+
+    // Draft lifecycle: create, read back, send (draft is removed from Drafts).
+    const draft = await provider.createDraft({
+      to: "dest@test.example",
+      subject: "Draft subject",
+      messageHtml: "<p>draft body</p>",
+    });
+    expect(draft.id).toBeTruthy();
+    const draftMessage = await provider.getDraft(draft.id);
+    expect(draftMessage?.subject).toBe("Draft subject");
+    const sentDraft = await provider.sendDraft(draft.id);
+    expect(sentDraft.messageId).toBe(draft.id);
+    expect(messageRows.get(draft.id)?.folderPath.toLowerCase()).toContain(
+      "sent",
+    );
   }, 60_000);
 });
 

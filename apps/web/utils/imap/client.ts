@@ -14,11 +14,15 @@ export type ImapAccountConfig = {
   port: number;
   username: string;
   password: string;
+  /** The mailbox address; the default From for outgoing mail. */
+  email: string;
   smtpHost: string;
   smtpPort: number;
   smtpPassword: string;
   /** Test-only TLS overrides (e.g. self-signed certs in integration tests). */
   tls?: ImapFlowOptions["tls"];
+  /** Test-only: force implicit TLS on a non-465 SMTP port. */
+  smtpSecure?: boolean;
 };
 
 export async function getImapAccountConfig({
@@ -28,6 +32,9 @@ export async function getImapAccountConfig({
 }): Promise<ImapAccountConfig> {
   const connection = await prisma.imapConnection.findFirst({
     where: { account: { emailAccount: { id: emailAccountId } } },
+    include: {
+      account: { select: { emailAccount: { select: { email: true } } } },
+    },
   });
   if (!connection) {
     throw new Error("No IMAP connection configured for account");
@@ -45,6 +52,7 @@ export async function getImapAccountConfig({
     port: connection.imapPort,
     username: connection.username,
     password,
+    email: connection.account.emailAccount?.email ?? connection.username,
     smtpHost: connection.smtpHost,
     smtpPort: connection.smtpPort,
     smtpPassword,

@@ -1,12 +1,26 @@
 import { Readable } from "node:stream";
-import { simpleParser } from "mailparser";
+import { simpleParser, type ParsedMail } from "mailparser";
 import type { ImapFlow, SearchObject } from "imapflow";
+import type Mail from "nodemailer/lib/mailer";
 import type { Attachment as MailAttachment } from "nodemailer/lib/mailer";
+import type { Transporter } from "nodemailer";
 import prisma from "@/utils/prisma";
 import type { Logger } from "@/utils/logger";
 import { createScopedLogger } from "@/utils/logger";
 import type { ParsedMessage } from "@/utils/types";
-import type { SendEmailBody } from "@/utils/types/mail";
+import { toMailerAttachments, type SendEmailBody } from "@/utils/types/mail";
+import { convertEmailHtmlToText } from "@/utils/mail";
+import { buildThreadingHeaders } from "@/utils/email/threading";
+import { formatReplySubject } from "@/utils/email/subject";
+// Generic MIME content builders that happen to live in the gmail module.
+import { createReplyContent } from "@/utils/gmail/reply";
+import {
+  forwardEmailHtml,
+  forwardEmailSubject,
+  forwardEmailText,
+} from "@/utils/gmail/forward";
+import { shouldSkipAutoDraft } from "@/utils/auto-draft";
+import { handlePreviousDraftDeletion } from "@/utils/ai/choose-rule/draft-management";
 import type { EmailContact } from "@/utils/email/contact";
 import type { InboxZeroLabel } from "@/utils/label";
 import { inboxZeroLabels } from "@/utils/label";
@@ -37,12 +51,14 @@ import {
   listImapFolders,
   pickSpecialFolder,
   getOrCreateFolderByName,
+  resolveOrCreateSpecialFolder,
   type ImapFolderInfo,
   type SpecialFolderKind,
 } from "@/utils/imap/folders";
 import { normalizeMessageId } from "@/utils/imap/message-id";
 import { ingestImapMessage } from "@/utils/imap/sync";
 import { attachmentIdFor, ImapSystemLabel } from "@/utils/imap/parse";
+import { buildMimeMessage, createSmtpTransport } from "@/utils/imap/smtp";
 
 const MAX_SOURCE_BYTES = 1024 * 1024;
 const DEFAULT_PAGE_SIZE = 20;
@@ -51,16 +67,19 @@ export class ImapProvider implements EmailProvider {
   readonly name = "imap";
   readonly localMailSyncStrategy = "folder-delta" as const;
 
+  private readonly config: ImapAccountConfig;
   private readonly session: ImapSession;
   private readonly emailAccountId: string;
   private readonly logger: Logger;
   private folderCache: ImapFolderInfo[] | null = null;
+  private transport: Transporter | null = null;
 
   constructor(
     config: ImapAccountConfig,
     emailAccountId: string,
     logger?: Logger,
   ) {
+    this.config = config;
     this.emailAccountId = emailAccountId;
     this.logger = logger || createScopedLogger("email-provider-imap");
     this.session = new ImapSession(config, this.logger);
@@ -655,126 +674,877 @@ export class ImapProvider implements EmailProvider {
     throw new Error("Mailbox sync is not yet available for IMAP accounts");
   }
 
-  // --- write path (phase 4) ---
+  // --- sending (SMTP + Sent copy) ---
 
-  async archiveMessage(): Promise<void> {
-    this.notYetSupported("archiveMessage");
+  async sendEmail(args: {
+    to: string;
+    cc?: string;
+    bcc?: string;
+    subject: string;
+    messageText: string;
+    attachments?: MailAttachment[];
+  }): Promise<{ messageId: string }> {
+    const { messageId } = await this.sendMime({
+      to: args.to,
+      cc: args.cc,
+      bcc: args.bcc,
+      subject: args.subject,
+      text: args.messageText,
+      attachments: args.attachments,
+    });
+    return { messageId };
   }
-  async archiveMessages(): Promise<void> {
-    this.notYetSupported("archiveMessages");
-  }
-  async archiveThread(): Promise<void> {
-    this.notYetSupported("archiveThread");
-  }
-  async archiveThreadWithLabel(): Promise<void> {
-    this.notYetSupported("archiveThreadWithLabel");
-  }
-  async blockUnsubscribedEmail(): Promise<void> {
-    this.notYetSupported("blockUnsubscribedEmail");
-  }
-  async bulkArchiveFromSenders(): Promise<void> {
-    this.notYetSupported("bulkArchiveFromSenders");
-  }
-  async bulkArchiveThreads(
-    _threads: BulkArchiveThread[],
-  ): Promise<BulkArchiveResult> {
-    return this.notYetSupported("bulkArchiveThreads");
-  }
-  async bulkTrashFromSenders(): Promise<void> {
-    this.notYetSupported("bulkTrashFromSenders");
-  }
-  async createDraft(): Promise<{ id: string }> {
-    return this.notYetSupported("createDraft");
-  }
-  async deleteDraft(): Promise<boolean> {
-    return this.notYetSupported("deleteDraft");
-  }
-  async draftEmail(
-    _email: ParsedMessage,
-    _args: { content: string; attachments?: MailAttachment[] },
-  ): Promise<{ draftId: string }> {
-    return this.notYetSupported("draftEmail");
-  }
-  async forwardEmail(): Promise<{ messageId: string }> {
-    return this.notYetSupported("forwardEmail");
-  }
-  async labelMessage(): Promise<{
-    usedFallback?: boolean;
-    actualLabelId?: string;
-  }> {
-    return this.notYetSupported("labelMessage");
-  }
-  async markMessagesReadState(): Promise<void> {
-    this.notYetSupported("markMessagesReadState");
-  }
-  async markMessagesStarredState(): Promise<void> {
-    this.notYetSupported("markMessagesStarredState");
-  }
-  async markRead(): Promise<void> {
-    this.notYetSupported("markRead");
-  }
-  async markReadThread(): Promise<void> {
-    this.notYetSupported("markReadThread");
-  }
-  async markSpam(): Promise<void> {
-    this.notYetSupported("markSpam");
-  }
-  async moveThreadToFolder(): Promise<void> {
-    this.notYetSupported("moveThreadToFolder");
-  }
-  async removeThreadLabel(): Promise<void> {
-    this.notYetSupported("removeThreadLabel");
-  }
-  async removeThreadLabels(): Promise<void> {
-    this.notYetSupported("removeThreadLabels");
-  }
-  async replyToEmail(): Promise<{ messageId: string }> {
-    return this.notYetSupported("replyToEmail");
-  }
-  async sendDraft(): Promise<{ messageId: string; threadId: string }> {
-    return this.notYetSupported("sendDraft");
-  }
-  async sendEmail(): Promise<{ messageId: string }> {
-    return this.notYetSupported("sendEmail");
-  }
+
   async sendEmailWithHtml(
-    _body: SendEmailBody,
+    body: SendEmailBody,
   ): Promise<{ messageId: string; threadId: string }> {
-    return this.notYetSupported("sendEmailWithHtml");
+    const result = await this.sendMime({
+      from: body.from,
+      to: body.to,
+      cc: body.cc,
+      bcc: body.bcc,
+      replyTo: body.replyTo,
+      subject: body.subject,
+      alternatives: [
+        {
+          contentType: "text/plain; charset=UTF-8",
+          content: this.htmlToText(body.messageHtml),
+        },
+        {
+          contentType: "text/html; charset=UTF-8",
+          content: body.messageHtml,
+        },
+      ],
+      attachments: toMailerAttachments(body.attachments),
+      ...buildThreadingHeaders({
+        headerMessageId: body.replyToEmail?.headerMessageId || "",
+        references: body.replyToEmail?.references,
+      }),
+    });
+
+    if (body.providerDraftId) {
+      await this.deleteDraft(body.providerDraftId).catch((error) => {
+        this.logger.warn("Failed to delete draft after send", { error });
+      });
+    }
+
+    return result;
   }
-  async starMessage(): Promise<void> {
-    this.notYetSupported("starMessage");
+
+  async replyToEmail(
+    email: ParsedMessage,
+    content: string,
+    options?: {
+      replyTo?: string;
+      from?: string;
+      attachments?: MailAttachment[];
+    },
+  ): Promise<{ messageId: string }> {
+    const { html, text } = createReplyContent({
+      textContent: content,
+      message: email,
+    });
+    const { messageId } = await this.sendMime({
+      from: options?.from,
+      replyTo: options?.replyTo,
+      to: email.headers["reply-to"] || email.headers.from,
+      subject: formatReplySubject(email.headers.subject),
+      alternatives: [
+        { contentType: "text/plain; charset=UTF-8", content: text },
+        { contentType: "text/html; charset=UTF-8", content: html },
+      ],
+      attachments: options?.attachments,
+      ...buildThreadingHeaders({
+        headerMessageId: email.headers["message-id"] || "",
+        references: email.headers.references,
+      }),
+    });
+    return { messageId };
   }
-  async trashMessages(): Promise<void> {
-    this.notYetSupported("trashMessages");
+
+  async forwardEmail(
+    email: ParsedMessage,
+    args: {
+      to: string;
+      cc?: string;
+      bcc?: string;
+      content?: string;
+      from?: string;
+    },
+  ): Promise<{ messageId: string }> {
+    const { messageId } = await this.sendMime({
+      from: args.from,
+      to: args.to,
+      cc: args.cc,
+      bcc: args.bcc,
+      subject: forwardEmailSubject(email.subject),
+      alternatives: [
+        {
+          contentType: "text/plain; charset=UTF-8",
+          content: forwardEmailText({
+            content: args.content ?? "",
+            message: email,
+          }),
+        },
+        {
+          contentType: "text/html; charset=UTF-8",
+          content: forwardEmailHtml({
+            content: args.content ?? "",
+            message: email,
+          }),
+        },
+      ],
+      attachments: await this.originalAttachments(email.id),
+    });
+    return { messageId };
   }
-  async trashThread(): Promise<void> {
-    this.notYetSupported("trashThread");
+
+  // --- drafts (write) ---
+
+  async createDraft(params: {
+    to: string;
+    subject: string;
+    messageHtml: string;
+    replyToMessageId?: string;
+  }): Promise<{ id: string }> {
+    const original = params.replyToMessageId
+      ? await this.getMessageOrNull(params.replyToMessageId)
+      : null;
+    const id = await this.appendDraft({
+      to: params.to,
+      subject: params.subject,
+      html: params.messageHtml,
+      ...(original
+        ? buildThreadingHeaders({
+            headerMessageId: original.headers["message-id"] || "",
+            references: original.headers.references,
+          })
+        : {}),
+    });
+    return { id };
   }
-  async unarchiveMessages(): Promise<void> {
-    this.notYetSupported("unarchiveMessages");
+
+  async draftEmail(
+    email: ParsedMessage,
+    args: {
+      to?: string;
+      subject?: string;
+      content: string;
+      cc?: string;
+      bcc?: string;
+      attachments?: MailAttachment[];
+    },
+    _userEmail: string,
+    executedRule?: { id: string; threadId: string; emailAccountId: string },
+  ): Promise<{ draftId: string }> {
+    if (shouldSkipAutoDraft({ logger: this.logger, source: "imap" })) {
+      return { draftId: "" };
+    }
+
+    const { html, text } = createReplyContent({
+      textContent: args.content,
+      message: email,
+    });
+    const draftPromise = this.appendDraft({
+      to: args.to || email.headers["reply-to"] || email.headers.from,
+      cc: args.cc,
+      bcc: args.bcc,
+      subject: args.subject || formatReplySubject(email.headers.subject),
+      html,
+      text,
+      attachments: args.attachments,
+      ...buildThreadingHeaders({
+        headerMessageId: email.headers["message-id"] || "",
+        references: email.headers.references,
+      }),
+    });
+
+    if (executedRule) {
+      const [draftId] = await Promise.all([
+        draftPromise,
+        handlePreviousDraftDeletion({
+          client: this,
+          executedRule,
+          logger: this.logger,
+        }),
+      ]);
+      return { draftId };
+    }
+
+    return { draftId: await draftPromise };
   }
-  async unarchiveThread(): Promise<void> {
-    this.notYetSupported("unarchiveThread");
+
+  async updateDraft(
+    draftId: string,
+    params: {
+      messageHtml?: string;
+      subject?: string;
+      to?: string;
+      cc?: string;
+      bcc?: string;
+      attachments?: SendEmailBody["attachments"];
+    },
+  ): Promise<void> {
+    const existing = await this.getDraft(draftId);
+    if (!existing) throw new Error(`Draft not found: ${draftId}`);
+    const row = await this.rowForMessage(draftId);
+    if (!row) throw new Error(`Draft not found: ${draftId}`);
+
+    // Remove the old copy first so the folder never holds two messages with
+    // the same Message-ID; the id (and so the map row) stays stable.
+    await this.deleteMessageAtLocation(row);
+    await this.appendDraft({
+      to: params.to ?? existing.headers.to,
+      cc: params.cc ?? existing.headers.cc,
+      bcc: params.bcc ?? existing.headers.bcc,
+      subject: params.subject ?? existing.subject,
+      html: params.messageHtml ?? existing.textHtml ?? existing.textPlain ?? "",
+      attachments: toMailerAttachments(params.attachments),
+      inReplyTo: existing.headers["in-reply-to"] || "",
+      references: existing.headers.references || "",
+      messageId: `<${draftId}>`,
+    });
   }
-  async untrashMessages(): Promise<void> {
-    this.notYetSupported("untrashMessages");
+
+  async deleteDraft(draftId: string, _version?: string): Promise<boolean> {
+    const row = await this.rowForMessage(draftId);
+    if (!row) return false;
+    await this.deleteMessageAtLocation(row);
+    await prisma.imapMessage.deleteMany({
+      where: {
+        emailAccountId: this.emailAccountId,
+        messageIdHeader: draftId,
+      },
+    });
+    return true;
   }
-  async untrashThread(): Promise<void> {
-    this.notYetSupported("untrashThread");
+
+  async sendDraft(
+    draftId: string,
+  ): Promise<{ messageId: string; threadId: string }> {
+    const row = await this.rowForMessage(draftId);
+    if (!row) throw new Error(`Draft not found: ${draftId}`);
+    const raw = await this.getMessageRaw(draftId);
+    const parsed = await simpleParser(raw);
+
+    await this.smtp().sendMail({
+      envelope: envelopeFromParsed(parsed),
+      raw,
+    });
+
+    const sent = await this.appendSentCopy(raw, draftId);
+    await this.deleteMessageAtLocation(row).catch((error) => {
+      this.logger.warn("Failed to remove sent draft from Drafts", { error });
+    });
+
+    return { messageId: draftId, threadId: sent?.threadId ?? draftId };
   }
-  async updateDraft(): Promise<void> {
-    this.notYetSupported("updateDraft");
+
+  // --- flags ---
+
+  async markRead(threadId: string): Promise<void> {
+    await this.markReadThread(threadId, true);
+  }
+
+  async markReadThread(threadId: string, read: boolean): Promise<void> {
+    await this.setFlagForRows(await this.rowsForThread(threadId), {
+      flag: "\\Seen",
+      add: read,
+    });
+  }
+
+  async markMessagesReadState(
+    messageIds: string[],
+    read: boolean,
+  ): Promise<void> {
+    await this.setFlagForRows(await this.rowsForMessages(messageIds), {
+      flag: "\\Seen",
+      add: read,
+    });
+  }
+
+  async markMessagesStarredState(
+    messageIds: string[],
+    starred: boolean,
+  ): Promise<void> {
+    await this.setFlagForRows(await this.rowsForMessages(messageIds), {
+      flag: "\\Flagged",
+      add: starred,
+    });
+  }
+
+  async starMessage(messageId: string): Promise<void> {
+    await this.markMessagesStarredState([messageId], true);
+  }
+
+  // --- moves (archive / trash / spam / labels-as-folders) ---
+
+  async archiveMessage(messageId: string): Promise<void> {
+    await this.archiveMessages([messageId]);
+  }
+
+  async archiveMessages(messageIds: string[], labelId?: string): Promise<void> {
+    const rows = await this.rowsForMessages(messageIds);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath === "INBOX"),
+      labelId ?? (await this.archiveFolder()),
+    );
+  }
+
+  async archiveThread(threadId: string, ownerEmail: string): Promise<void> {
+    await this.archiveThreadWithLabel(threadId, ownerEmail);
+  }
+
+  async archiveThreadWithLabel(
+    threadId: string,
+    _ownerEmail: string,
+    labelId?: string,
+  ): Promise<void> {
+    const rows = await this.rowsForThread(threadId);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath === "INBOX"),
+      labelId ?? (await this.archiveFolder()),
+    );
+  }
+
+  async unarchiveMessages(messageIds: string[]): Promise<void> {
+    const archive = await this.archiveFolder();
+    const rows = await this.rowsForMessages(messageIds);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath === archive),
+      "INBOX",
+    );
+  }
+
+  async unarchiveThread(threadId: string): Promise<void> {
+    const archive = await this.archiveFolder();
+    const rows = await this.rowsForThread(threadId);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath === archive),
+      "INBOX",
+    );
+  }
+
+  async bulkArchiveThreads(
+    threads: BulkArchiveThread[],
+    ownerEmail: string,
+  ): Promise<BulkArchiveResult> {
+    const succeededThreadIds: string[] = [];
+    const failedThreadIds: string[] = [];
+    for (const thread of threads) {
+      try {
+        await this.archiveThread(thread.threadId, ownerEmail);
+        succeededThreadIds.push(thread.threadId);
+      } catch (error) {
+        this.logger.warn("Failed to archive thread in bulk", {
+          threadId: thread.threadId,
+          error,
+        });
+        failedThreadIds.push(thread.threadId);
+      }
+    }
+    return { succeededThreadIds, failedThreadIds };
+  }
+
+  async bulkArchiveFromSenders(
+    fromEmails: string[],
+    _ownerEmail: string,
+    _emailAccountId: string,
+  ): Promise<void> {
+    const archive = await this.archiveFolder();
+    for (const sender of fromEmails) {
+      await this.moveSearchedUids("INBOX", { from: sender }, archive);
+    }
+  }
+
+  async bulkTrashFromSenders(
+    fromEmails: string[],
+    _ownerEmail: string,
+    _emailAccountId: string,
+  ): Promise<void> {
+    const trash = await this.trashFolder();
+    for (const sender of fromEmails) {
+      await this.moveSearchedUids("INBOX", { from: sender }, trash);
+    }
+  }
+
+  async trashMessages(messageIds: string[]): Promise<void> {
+    const trash = await this.trashFolder();
+    const rows = await this.rowsForMessages(messageIds);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath !== trash),
+      trash,
+    );
+  }
+
+  async trashThread(
+    threadId: string,
+    _ownerEmail: string,
+    _actionSource: "user" | "automation",
+  ): Promise<void> {
+    const trash = await this.trashFolder();
+    const rows = await this.rowsForThread(threadId);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath !== trash),
+      trash,
+    );
+  }
+
+  async untrashMessages(messageIds: string[]): Promise<void> {
+    const trash = await this.trashFolder();
+    const rows = await this.rowsForMessages(messageIds);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath === trash),
+      "INBOX",
+    );
+  }
+
+  async untrashThread(threadId: string): Promise<void> {
+    const trash = await this.trashFolder();
+    const rows = await this.rowsForThread(threadId);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath === trash),
+      "INBOX",
+    );
+  }
+
+  async markSpam(threadId: string): Promise<void> {
+    const junk = await this.junkFolder();
+    const rows = await this.rowsForThread(threadId);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath === "INBOX"),
+      junk,
+    );
+  }
+
+  async moveThreadToFolder(
+    threadId: string,
+    _ownerEmail: string,
+    folderName: string,
+  ): Promise<void> {
+    const target = await this.getOrCreateFolderIdByName(folderName);
+    const rows = await this.rowsForThread(threadId);
+    const keepOut = new Set(
+      [
+        await this.specialFolder("sent"),
+        await this.specialFolder("drafts"),
+        await this.specialFolder("trash"),
+      ].filter(Boolean),
+    );
+    await this.moveRows(
+      rows.filter((row) => !keepOut.has(row.folderPath)),
+      target,
+    );
+  }
+
+  async labelMessage(options: {
+    messageId: string;
+    labelId: string;
+    labelName: string | null;
+  }): Promise<{ usedFallback?: boolean; actualLabelId?: string }> {
+    const row = await this.rowForMessage(options.messageId);
+    if (!row) throw new Error(`Message not found: ${options.messageId}`);
+
+    let target = options.labelId;
+    let usedFallback = false;
+    if (!(await this.getLabelById(target))) {
+      target = await this.getOrCreateFolderIdByName(
+        options.labelName || options.labelId,
+      );
+      usedFallback = true;
+    }
+    await this.moveRows([row], target);
+    return { usedFallback, actualLabelId: target };
+  }
+
+  async removeThreadLabel(threadId: string, labelId: string): Promise<void> {
+    const rows = await this.rowsForThread(threadId);
+    await this.moveRows(
+      rows.filter((row) => row.folderPath === labelId),
+      "INBOX",
+    );
+  }
+
+  async removeThreadLabels(
+    threadId: string,
+    labelIds: string[],
+  ): Promise<void> {
+    for (const labelId of labelIds) {
+      await this.removeThreadLabel(threadId, labelId);
+    }
+  }
+
+  async blockUnsubscribedEmail(messageId: string): Promise<void> {
+    const row = await this.rowForMessage(messageId);
+    if (!row) return;
+    await this.setFlagForRows([row], { flag: "\\Seen", add: true });
+    if (row.folderPath === "INBOX") {
+      await this.moveRows([row], await this.archiveFolder());
+    }
   }
 
   // --- internals ---
 
-  private notYetSupported(method: string): never {
-    throw new Error(`${method} is not yet supported for IMAP accounts`);
-  }
-
   private async client(): Promise<ImapFlow> {
     return this.session.getClient();
+  }
+
+  private smtp(): Transporter {
+    if (!this.transport) this.transport = createSmtpTransport(this.config);
+    return this.transport;
+  }
+
+  private htmlToText(html: string): string {
+    try {
+      return convertEmailHtmlToText({ htmlText: html });
+    } catch (error) {
+      this.logger.warn("Error converting email html to text", { error });
+      return html
+        .replace(/<[^>]*>/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+  }
+
+  /**
+   * Composes the message once, sends the bytes over SMTP, and appends the
+   * same bytes to the Sent folder (most IMAP servers do not save sent mail
+   * themselves). Known limitation: Gmail-over-IMAP saves its own Sent copy,
+   * so those accounts may see duplicates.
+   */
+  private async sendMime(
+    options: Mail.Options,
+  ): Promise<{ messageId: string; threadId: string }> {
+    const built = await buildMimeMessage({
+      ...options,
+      from: typeof options.from === "string" ? options.from : this.config.email,
+    });
+    await this.smtp().sendMail({ envelope: built.envelope, raw: built.raw });
+    const sent = await this.appendSentCopy(built.raw, built.messageId);
+    return {
+      messageId: built.messageId,
+      threadId: sent?.threadId ?? built.messageId,
+    };
+  }
+
+  private async appendSentCopy(
+    raw: Buffer,
+    messageId: string,
+  ): Promise<ParsedMessage | null> {
+    try {
+      const client = await this.client();
+      const sentPath = await resolveOrCreateSpecialFolder(
+        client,
+        "sent",
+        "Sent",
+      );
+      this.folderCache = null;
+      return await this.appendAndIngest({
+        folderPath: sentPath,
+        raw,
+        flags: ["\\Seen"],
+        messageId,
+      });
+    } catch (error) {
+      // The message went out over SMTP; a missing Sent copy is recoverable.
+      this.logger.error("Failed to append sent copy to Sent folder", {
+        error,
+      });
+      return null;
+    }
+  }
+
+  private async appendAndIngest({
+    folderPath,
+    raw,
+    flags,
+    messageId,
+  }: {
+    folderPath: string;
+    raw: Buffer;
+    flags: string[];
+    messageId: string;
+  }): Promise<ParsedMessage | null> {
+    const client = await this.client();
+    const appended = await client.append(folderPath, raw, flags);
+    if (appended !== false && appended.uid) {
+      return this.fetchByLocation(
+        appended.destination || folderPath,
+        BigInt(appended.uid),
+        messageId,
+      );
+    }
+    // No UIDPLUS: locate the appended copy by its Message-ID.
+    return this.searchAndFetchByMessageId(messageId);
+  }
+
+  private async appendDraft(options: {
+    to: string;
+    cc?: string;
+    bcc?: string;
+    subject: string;
+    html: string;
+    text?: string;
+    attachments?: MailAttachment[];
+    inReplyTo?: string;
+    references?: string;
+    messageId?: string;
+  }): Promise<string> {
+    const built = await buildMimeMessage({
+      from: this.config.email,
+      to: options.to,
+      cc: options.cc,
+      bcc: options.bcc,
+      subject: options.subject,
+      alternatives: [
+        {
+          contentType: "text/plain; charset=UTF-8",
+          content: options.text ?? this.htmlToText(options.html),
+        },
+        { contentType: "text/html; charset=UTF-8", content: options.html },
+      ],
+      attachments: options.attachments,
+      inReplyTo: options.inReplyTo,
+      references: options.references,
+      messageId: options.messageId,
+    });
+    const client = await this.client();
+    const draftsPath = await resolveOrCreateSpecialFolder(
+      client,
+      "drafts",
+      "Drafts",
+    );
+    this.folderCache = null;
+    await this.appendAndIngest({
+      folderPath: draftsPath,
+      raw: built.raw,
+      flags: ["\\Draft", "\\Seen"],
+      messageId: built.messageId,
+    });
+    return built.messageId;
+  }
+
+  private async originalAttachments(
+    messageId: string,
+  ): Promise<MailAttachment[] | undefined> {
+    try {
+      const raw = await this.getMessageRaw(messageId);
+      const parsed = await simpleParser(raw);
+      if (!parsed.attachments?.length) return;
+      return parsed.attachments.map((attachment) => ({
+        filename: attachment.filename,
+        content: attachment.content,
+        contentType: attachment.contentType,
+        ...(attachment.cid ? { cid: attachment.cid } : {}),
+      }));
+    } catch (error) {
+      this.logger.warn("Failed to load original attachments for forward", {
+        error,
+      });
+      return;
+    }
+  }
+
+  private async rowForMessage(
+    messageId: string,
+  ): Promise<ImapMessageRow | null> {
+    return prisma.imapMessage.findUnique({
+      where: {
+        emailAccountId_messageIdHeader: {
+          emailAccountId: this.emailAccountId,
+          messageIdHeader: messageId,
+        },
+      },
+      select: imapMessageRowSelect,
+    });
+  }
+
+  private async rowsForMessages(
+    messageIds: string[],
+  ): Promise<ImapMessageRow[]> {
+    return prisma.imapMessage.findMany({
+      where: {
+        emailAccountId: this.emailAccountId,
+        messageIdHeader: { in: messageIds },
+      },
+      select: imapMessageRowSelect,
+    });
+  }
+
+  private async rowsForThread(threadId: string): Promise<ImapMessageRow[]> {
+    return prisma.imapMessage.findMany({
+      where: { emailAccountId: this.emailAccountId, threadId },
+      select: imapMessageRowSelect,
+    });
+  }
+
+  /**
+   * Moves messages (grouped by their current folder) to the target folder and
+   * records the new locations. Without UIDPLUS the new UID is unknown; the
+   * row keeps uid 0 and the next fetch repairs it via Message-ID search.
+   */
+  private async moveRows(
+    rows: ImapMessageRow[],
+    targetPath: string,
+  ): Promise<void> {
+    const toMove = rows.filter((row) => row.folderPath !== targetPath);
+    if (!toMove.length) return;
+
+    const client = await this.client();
+    const byFolder = new Map<string, ImapMessageRow[]>();
+    for (const row of toMove) {
+      const list = byFolder.get(row.folderPath);
+      if (list) list.push(row);
+      else byFolder.set(row.folderPath, [row]);
+    }
+
+    for (const [folderPath, folderRows] of byFolder) {
+      await withMailbox(client, folderPath, async () => {
+        const result = await client.messageMove(
+          folderRows.map((row) => String(row.uid)).join(","),
+          targetPath,
+          { uid: true },
+        );
+        const uidMap = result ? result.uidMap : undefined;
+        for (const row of folderRows) {
+          const newUid = uidMap?.get(Number(row.uid));
+          await prisma.imapMessage.updateMany({
+            where: {
+              emailAccountId: this.emailAccountId,
+              messageIdHeader: row.messageIdHeader,
+            },
+            data: {
+              folderPath: targetPath,
+              uid: newUid ? BigInt(newUid) : BigInt(0),
+            },
+          });
+        }
+      });
+    }
+
+    await prisma.emailMessage.updateMany({
+      where: {
+        emailAccountId: this.emailAccountId,
+        messageId: { in: toMove.map((row) => row.messageIdHeader) },
+      },
+      data: { inbox: targetPath === "INBOX" },
+    });
+  }
+
+  /**
+   * Moves every message matching the search out of a folder, including mail
+   * from before the account was connected (which has no map row yet).
+   */
+  private async moveSearchedUids(
+    folderPath: string,
+    criteria: SearchObject,
+    targetPath: string,
+  ): Promise<void> {
+    const client = await this.client();
+    const uids = await withMailbox(client, folderPath, async () => {
+      const found = await client.search(criteria, { uid: true });
+      return found || [];
+    });
+    if (!uids.length) return;
+
+    const known = await prisma.imapMessage.findMany({
+      where: {
+        emailAccountId: this.emailAccountId,
+        folderPath,
+        uid: { in: uids.map((uid) => BigInt(uid)) },
+      },
+      select: imapMessageRowSelect,
+    });
+    const knownUids = new Set(known.map((row) => Number(row.uid)));
+    const unknownUids = uids.filter((uid) => !knownUids.has(uid));
+
+    await this.moveRows(known, targetPath);
+    if (unknownUids.length) {
+      await withMailbox(client, folderPath, async () => {
+        await client.messageMove(unknownUids.join(","), targetPath, {
+          uid: true,
+        });
+      });
+    }
+  }
+
+  private async setFlagForRows(
+    rows: ImapMessageRow[],
+    { flag, add }: { flag: "\\Seen" | "\\Flagged"; add: boolean },
+  ): Promise<void> {
+    if (!rows.length) return;
+    const client = await this.client();
+
+    const byFolder = new Map<string, ImapMessageRow[]>();
+    for (const row of rows) {
+      const list = byFolder.get(row.folderPath);
+      if (list) list.push(row);
+      else byFolder.set(row.folderPath, [row]);
+    }
+
+    for (const [folderPath, folderRows] of byFolder) {
+      await withMailbox(client, folderPath, async () => {
+        const range = folderRows.map((row) => String(row.uid)).join(",");
+        if (add) await client.messageFlagsAdd(range, [flag], { uid: true });
+        else await client.messageFlagsRemove(range, [flag], { uid: true });
+      });
+      for (const row of folderRows) {
+        const flags = add
+          ? [...new Set([...row.flags, flag])]
+          : row.flags.filter((existing) => existing !== flag);
+        await prisma.imapMessage.updateMany({
+          where: {
+            emailAccountId: this.emailAccountId,
+            messageIdHeader: row.messageIdHeader,
+          },
+          data: { flags },
+        });
+      }
+    }
+
+    if (flag === "\\Seen") {
+      await prisma.emailMessage.updateMany({
+        where: {
+          emailAccountId: this.emailAccountId,
+          messageId: { in: rows.map((row) => row.messageIdHeader) },
+        },
+        data: { read: add },
+      });
+    }
+  }
+
+  private async deleteMessageAtLocation(
+    row: Pick<ImapMessageRow, "folderPath" | "uid">,
+  ): Promise<void> {
+    const client = await this.client();
+    await withMailbox(client, row.folderPath, async () => {
+      await client.messageDelete(String(row.uid), { uid: true });
+    });
+  }
+
+  private async archiveFolder(): Promise<string> {
+    const client = await this.client();
+    const path = await resolveOrCreateSpecialFolder(
+      client,
+      "archive",
+      "Archive",
+    );
+    this.folderCache = null;
+    return path;
+  }
+
+  private async trashFolder(): Promise<string> {
+    const client = await this.client();
+    const path = await resolveOrCreateSpecialFolder(client, "trash", "Trash");
+    this.folderCache = null;
+    return path;
+  }
+
+  private async junkFolder(): Promise<string> {
+    const client = await this.client();
+    const path = await resolveOrCreateSpecialFolder(client, "junk", "Junk");
+    this.folderCache = null;
+    return path;
   }
 
   private async listFolders(): Promise<ImapFolderInfo[]> {
@@ -1082,6 +1852,42 @@ export class ImapProvider implements EmailProvider {
       return fetched.source;
     });
   }
+}
+
+const imapMessageRowSelect = {
+  messageIdHeader: true,
+  folderPath: true,
+  uid: true,
+  flags: true,
+} as const;
+
+type ImapMessageRow = {
+  messageIdHeader: string;
+  folderPath: string;
+  uid: bigint;
+  flags: string[];
+};
+
+function envelopeFromParsed(parsed: ParsedMail): Mail.Envelope {
+  const addresses = (
+    value: ParsedMail["to"] | ParsedMail["from"],
+  ): string[] => {
+    if (!value) return [];
+    const list = Array.isArray(value) ? value : [value];
+    return list.flatMap((entry) =>
+      entry.value
+        .map((address) => address.address)
+        .filter((address): address is string => Boolean(address)),
+    );
+  };
+  return {
+    from: addresses(parsed.from)[0],
+    to: [
+      ...addresses(parsed.to),
+      ...addresses(parsed.cc),
+      ...addresses(parsed.bcc),
+    ].join(", "),
+  };
 }
 
 function groupIntoThreads(messages: ParsedMessage[]): EmailThread[] {

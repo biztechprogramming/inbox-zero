@@ -109,7 +109,7 @@ export async function executeDurableEmailSend({
       stage !== "persist_result" &&
       classifyEmailAccountProviderIssue({
         error,
-        provider: provider as "google" | "microsoft",
+        provider: provider as EmailProvider["name"],
       })
     ) {
       await prisma.emailSendOperation.deleteMany({
