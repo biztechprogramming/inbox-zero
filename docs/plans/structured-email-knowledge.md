@@ -1,9 +1,9 @@
 # Plan: Structured email knowledge (typed items, thread state, attention view)
 
-Status: plan — awaiting approval of the model-facing parts (extraction prompt,
-three new MCP tools, `search_knowledge` description, MCP server instructions).
-Non-model-facing parts (schema, drain, lifecycle, attention query, backfill) are
-being built while approval is pending.
+Status: approved by the user on 2026-10-01 and implemented: extraction
+prompt, the three MCP tools, the `search_knowledge` description, the
+server-instructions tweak, and the `default` tier for knowledge extraction.
+Item types stay as proposed. Verified on the dev Outlook account (§8).
 
 Builds on [mem0-email-knowledge-base.md](./mem0-email-knowledge-base.md).
 
@@ -190,7 +190,7 @@ client waits up to 10 minutes per attempt, and during backfill #2 it stalled
 one iteration for 17 minutes. Typed items, thread summaries, and ephemera
 filtering need no embedder at all.
 
-### Proposed extraction prompt (model-facing — needs approval)
+### Extraction prompt (model-facing, approved)
 
 System instructions (compact hardening is appended by `createGenerateObject`):
 
@@ -258,7 +258,7 @@ Hard guards enforced in code rather than trusted to the prompt: `ephemeral` ⇒
 facts and newItems dropped; counterparty must be a header participant;
 `dueDate` must parse; resolved ids must map to an open item in the same thread.
 
-### Model tier (routing change — flagged for the user)
+### Model tier (routing change, approved)
 
 On the eval (§7), 3 runs × 13 cases, GPT-5.4 Nano (this deployment's
 `economy` model) failed the same cases every run: it repeated an obligation
@@ -373,7 +373,7 @@ measure and report.
 The 30-day window and 3-day "due soon" bound are fixed constants.
 `list_email_items` covers custom windows.
 
-## 5. MCP tools (model-facing — needs approval)
+## 5. MCP tools (model-facing, approved)
 
 Three new read tools (`mcp:read`), plus a description update to one existing
 tool. All accept the existing `emailAccountId` / `emailAddress` selector.
@@ -399,7 +399,7 @@ Returns `{ emailAccount, threads: [{ threadId, subject, lastMessageAt, lastFrom,
 ```ts
 server.registerTool("list_email_items", {
   description:
-    'List structured items extracted from one inbox account\'s email: commitments (someone promised to do something), requests (someone asked someone to do something), deadlines, and decisions. Each item has a status — open until later mail in its thread completes, answers, cancels, or supersedes it (for decisions, open means still in effect) — an owner ("me": the user must act or made the promise; "them": someone else must), the counterparty, an optional due date, and its source thread and link. Filters combine with AND; results are newest first and complete, so page with offset to list everything. Use this for exhaustive or filtered lists; use search_knowledge for background facts about people and topics. Read-only.',
+    'List structured items extracted from one inbox account\'s email: commitments (someone promised to do something), requests (someone asked someone to do something), deadlines, and decisions. Each item has a status — open until later mail completes, answers, cancels, or supersedes it (for decisions, open means still in effect) — an owner ("me": the user must act or made the promise; "them": someone else must), the counterparty, an optional due date, and its source thread and link. Filters combine with AND; results are newest first and complete, so page with offset to list everything. Use this for exhaustive or filtered lists; use search_knowledge for background facts about people and topics. Read-only.',
   inputSchema: {
     ...accountSelectorShape,
     types: z.array(z.enum(["commitment", "request", "deadline", "decision"])).optional()
@@ -424,7 +424,10 @@ server.registerTool("list_email_items", {
 });
 ```
 
-Returns `{ emailAccount, items: [...], hasMore }`. The default audience is
+Returns `{ emailAccount, items: [...], hasMore }`. One post-approval wording
+fix: the approved text said items stay open "until later mail in its thread"
+resolves them. Same-sender reminders in other threads can resolve them too
+(§3), so "in its thread" was dropped. The default audience is
 `any`, unlike `search_knowledge`'s `direct`. That default exists because
 list-audience memories swamp a similarity ranking. Exact filters don't have
 that problem, so a complete list defaults to complete.

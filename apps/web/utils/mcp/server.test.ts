@@ -75,6 +75,11 @@ vi.mock("@/utils/prisma");
 vi.mock("@/utils/premium/server", () => ({
   assertCanUseDigestsIfNeeded: vi.fn(),
 }));
+vi.mock("@/utils/knowledge/attention", () => ({ getAttention: vi.fn() }));
+vi.mock("@/utils/knowledge/items", () => ({ listEmailItems: vi.fn() }));
+vi.mock("@/utils/ai/assistant/search-inbox-db", () => ({
+  searchEmailMessages: vi.fn(),
+}));
 vi.mock("@/utils/rule/rule", () => ({
   createRule: vi.fn(),
   deleteRule: vi.fn(),
@@ -88,6 +93,9 @@ import { resolveMcpEmailAccount } from "@/utils/mcp/account-selection";
 import prisma from "@/utils/__mocks__/prisma";
 import { handleMcpServerRequest } from "@/utils/mcp/server";
 import { isMcpServerEnabledForUser } from "@/utils/mcp/access";
+import { getAttention } from "@/utils/knowledge/attention";
+import { listEmailItems } from "@/utils/knowledge/items";
+import { searchEmailMessages } from "@/utils/ai/assistant/search-inbox-db";
 
 describe("mcp-server", () => {
   beforeEach(() => {
@@ -117,7 +125,7 @@ describe("mcp-server", () => {
     } as never);
 
     expect(mcpServerConstructor).toHaveBeenCalledTimes(1);
-    expect(registerTool).toHaveBeenCalledTimes(9);
+    expect(registerTool).toHaveBeenCalledTimes(12);
     expect(connect).toHaveBeenCalledTimes(1);
     expect(transportConstructor).toHaveBeenCalledWith({
       sessionIdGenerator: undefined,
@@ -180,6 +188,9 @@ describe("MCP tool permissions and rule writes", () => {
     "get_stats_by_period",
     "get_response_time_stats",
     "search_knowledge",
+    "get_attention",
+    "list_email_items",
+    "search_emails",
   ])("denies %s without a read grant", async (name) => {
     const tool = await getTool(name, ["offline_access"]);
     await expect(tool({ id: "rule_1" })).rejects.toThrow(
@@ -233,6 +244,185 @@ describe("MCP tool permissions and rule writes", () => {
     );
     expect(updateRule).not.toHaveBeenCalled();
     expect(deleteRule).not.toHaveBeenCalled();
+  });
+});
+
+describe("MCP email knowledge tools", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.mocked(isMcpServerEnabledForUser).mockResolvedValue(true);
+    vi.mocked(resolveMcpEmailAccount).mockResolvedValue({
+      id: "account_1",
+      email: "owner@example.com",
+      name: null,
+      provider: "microsoft",
+    });
+    vi.mocked(listEmailItems).mockResolvedValue({ items: [], hasMore: false });
+    vi.mocked(searchEmailMessages).mockResolvedValue([]);
+  });
+
+  it("lists open items by default and maps filters onto stored values", async () => {
+    const tool = await getTool("list_email_items", ["mcp:read"]);
+
+    await tool({
+      types: ["request", "commitment"],
+      owner: "me",
+      audience: "cc",
+      dueBefore: "2026-10-05",
+      counterparty: "northwind.com",
+    });
+
+    expect(listEmailItems).toHaveBeenCalledWith({
+      emailAccountId: "account_1",
+      filters: {
+        types: ["REQUEST", "COMMITMENT"],
+        status: "OPEN",
+        owner: "ME",
+        audience: "CC",
+        dueBefore: new Date("2026-10-05T00:00:00Z"),
+        counterparty: "northwind.com",
+      },
+      limit: 50,
+      offset: 0,
+    });
+  });
+
+  it("drops the status and audience filters for any", async () => {
+    const tool = await getTool("list_email_items", ["mcp:read"]);
+
+    await tool({ status: "any", audience: "any" });
+
+    const { filters } = vi.mocked(listEmailItems).mock.calls[0][0];
+    expect(filters.status).toBeUndefined();
+    expect(filters.audience).toBeUndefined();
+  });
+
+  it("rejects a malformed date instead of guessing", async () => {
+    const tool = await getTool("list_email_items", ["mcp:read"]);
+
+    await expect(tool({ after: "next friday" })).rejects.toThrow("YYYY-MM-DD");
+    expect(listEmailItems).not.toHaveBeenCalled();
+  });
+
+  it("returns items with lowercase enums and plain dates", async () => {
+    vi.mocked(listEmailItems).mockResolvedValue({
+      items: [
+        {
+          id: "item_1",
+          type: "REQUEST",
+          status: "OPEN",
+          text: "Sam asked the user to review the budget.",
+          owner: "ME",
+          counterpartyEmail: "sam@acme.example",
+          counterpartyName: "Sam Lee",
+          dueDate: new Date("2026-10-02T00:00:00Z"),
+          sourceDate: new Date("2026-09-28T15:00:00Z"),
+          audience: "DIRECT",
+          threadId: "thread_1",
+          messageId: "message_1",
+          resolvedAt: null,
+          subject: "Q4 budget",
+          link: "https://mail.example/1",
+        },
+      ],
+      hasMore: true,
+    } as never);
+    const tool = await getTool("list_email_items", ["mcp:read"]);
+
+    const result = (await tool({})) as { structuredContent: unknown };
+
+    expect(result.structuredContent).toMatchObject({
+      hasMore: true,
+      items: [
+        {
+          type: "request",
+          status: "open",
+          owner: "me",
+          audience: "direct",
+          dueDate: "2026-10-02",
+          sourceDate: "2026-09-28T15:00:00.000Z",
+          resolvedAt: null,
+        },
+      ],
+    });
+  });
+
+  it("requires at least one filter for search_emails", async () => {
+    const tool = await getTool("search_emails", ["mcp:read"]);
+
+    await expect(tool({ limit: 5 })).rejects.toThrow("at least one filter");
+    expect(searchEmailMessages).not.toHaveBeenCalled();
+  });
+
+  it("maps search_emails parameters onto the local mirror filters", async () => {
+    const tool = await getTool("search_emails", ["mcp:read"]);
+
+    await tool({
+      query: "invoice",
+      from: "Billing@Vendor.example",
+      unread: true,
+      hasAttachment: false,
+      folder: "inbox",
+      after: "2026-09-01",
+    });
+
+    expect(searchEmailMessages).toHaveBeenCalledWith({
+      emailAccountId: "account_1",
+      filters: {
+        text: "invoice",
+        from: "billing@vendor.example",
+        read: false,
+        hasAttachments: false,
+        inbox: true,
+        after: new Date("2026-09-01T00:00:00Z"),
+      },
+      limit: 20,
+      offset: 0,
+    });
+  });
+
+  it("returns ranked attention threads with serialized dates", async () => {
+    vi.mocked(getAttention).mockResolvedValue([
+      {
+        threadId: "thread_1",
+        subject: "Q4 budget",
+        lastMessageAt: new Date("2026-09-28T15:00:00Z"),
+        lastFrom: "Sam Lee",
+        link: null,
+        summary: "Sam needs comments by Friday.",
+        urgency: 4,
+        tracker: "NEEDS_REPLY",
+        items: [
+          {
+            id: "item_1",
+            type: "REQUEST",
+            text: "Sam asked the user to review the budget.",
+            owner: "ME",
+            counterpartyEmail: null,
+            counterpartyName: null,
+            dueDate: new Date("2026-10-02T00:00:00Z"),
+            sourceDate: new Date("2026-09-28T15:00:00Z"),
+          },
+        ],
+      },
+    ] as never);
+    const tool = await getTool("get_attention", ["mcp:read"]);
+
+    const result = (await tool({ limit: 5 })) as { structuredContent: unknown };
+
+    expect(getAttention).toHaveBeenCalledWith({
+      emailAccountId: "account_1",
+      limit: 5,
+    });
+    expect(result.structuredContent).toMatchObject({
+      threads: [
+        {
+          lastMessageAt: "2026-09-28T15:00:00.000Z",
+          tracker: "needs_reply",
+          items: [{ type: "request", owner: "me", dueDate: "2026-10-02" }],
+        },
+      ],
+    });
   });
 });
 
