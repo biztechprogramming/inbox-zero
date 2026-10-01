@@ -1,4 +1,5 @@
 import type { Memory } from "mem0ai/oss";
+import type { Prisma } from "@/generated/prisma/client";
 import {
   EmailAudience,
   EmailItemOwner,
@@ -31,14 +32,28 @@ import { getEmailAccountWithAi } from "@/utils/user/get";
 const KNOWN_FACTS_LIMIT = 10;
 // Bounds the prompt for a thread whose items never get resolved.
 const OPEN_ITEMS_LIMIT = 30;
+// Reminder series and "resolved" notices arrive as new threads from the
+// same sender, so their recent open items are shown alongside the thread's.
+const SENDER_ITEMS_LIMIT = 10;
 const DATE_ONLY_PATTERN = /^\d{4}-\d{2}-\d{2}$/;
 
 export type PendingMessage = {
   messageId: string;
   threadId: string;
+  from: string;
   sent: boolean;
   date: Date;
 };
+
+const openItemSelect = {
+  id: true,
+  type: true,
+  text: true,
+  owner: true,
+  counterpartyEmail: true,
+  dueDate: true,
+  sourceDate: true,
+} as const;
 
 type EmailAccount = NonNullable<
   Awaited<ReturnType<typeof getEmailAccountWithAi>>
@@ -96,12 +111,17 @@ export async function createExtractionContext({
 export async function extractThreadKnowledge({
   context,
   messages,
+  deadline,
 }: {
   context: ExtractionContext;
   messages: PendingMessage[];
+  /** Epoch ms after which no new message is started. */
+  deadline: number;
 }) {
   let processed = 0;
   for (const candidate of messages) {
+    if (Date.now() > deadline)
+      return { processed, failed: false, complete: false };
     try {
       await extractMessage(context, candidate);
       processed++;
@@ -122,10 +142,10 @@ export async function extractThreadKnowledge({
         error,
         messageId: candidate.messageId,
       });
-      return { processed, failed: true };
+      return { processed, failed: true, complete: false };
     }
   }
-  return { processed, failed: false };
+  return { processed, failed: false, complete: true };
 }
 
 async function extractMessage(
@@ -149,43 +169,44 @@ async function extractMessage(
     return;
   }
 
-  const [newestExtracted, summarized, openItems] = await Promise.all([
-    prisma.emailMessage.findFirst({
-      where: {
-        emailAccountId,
-        threadId: candidate.threadId,
-        knowledgeExtractedAt: { not: null },
-      },
-      orderBy: { date: "desc" },
-      select: { date: true },
-    }),
-    prisma.emailMessage.findFirst({
-      where: {
-        emailAccountId,
-        threadId: candidate.threadId,
-        threadSummary: { not: null },
-      },
-      orderBy: { date: "desc" },
-      select: { threadSummary: true },
-    }),
-    prisma.emailItem.findMany({
-      where: {
-        emailAccountId,
-        threadId: candidate.threadId,
-        status: EmailItemStatus.OPEN,
-      },
-      orderBy: { sourceDate: "asc" },
-      take: OPEN_ITEMS_LIMIT,
-      select: {
-        id: true,
-        type: true,
-        text: true,
-        owner: true,
-        counterpartyEmail: true,
-        dueDate: true,
-      },
-    }),
-  ]);
+  const fromQueue = isQueueSender(message, context.queueSenders);
+  const [newestExtracted, summarized, threadItems, senderItems] =
+    await Promise.all([
+      prisma.emailMessage.findFirst({
+        where: {
+          emailAccountId,
+          threadId: candidate.threadId,
+          knowledgeExtractedAt: { not: null },
+        },
+        orderBy: { date: "desc" },
+        select: { date: true },
+      }),
+      prisma.emailMessage.findFirst({
+        where: {
+          emailAccountId,
+          threadId: candidate.threadId,
+          threadSummary: { not: null },
+        },
+        orderBy: { date: "desc" },
+        select: { threadSummary: true },
+      }),
+      prisma.emailItem.findMany({
+        where: {
+          emailAccountId,
+          threadId: candidate.threadId,
+          status: EmailItemStatus.OPEN,
+        },
+        orderBy: { sourceDate: "asc" },
+        take: OPEN_ITEMS_LIMIT,
+        select: openItemSelect,
+      }),
+      // A shared queue sends every unrelated ticket, and the user's own
+      // items span all their threads, so neither is a meaningful series.
+      candidate.sent || fromQueue
+        ? []
+        : getSenderOpenItems({ emailAccountId, candidate }),
+    ]);
+  const openItems = [...threadItems, ...senderItems];
 
   const knownFacts = memory
     ? (
@@ -209,7 +230,7 @@ async function extractMessage(
     message,
     sent: candidate.sent,
     userEmail: emailAccount.email,
-    queueSenders: context.queueSenders,
+    fromQueue,
   });
 
   // A message older than the thread's newest extracted one arrived after
@@ -221,6 +242,14 @@ async function extractMessage(
     analysis,
     late,
     participants: getParticipants(message, emailAccount.email),
+    // An email can only close what came before it. During a newest-first
+    // backfill an older reminder may see a newer item; it can skip
+    // repeating it but must not resolve it.
+    resolvableItemIds: new Set(
+      openItems
+        .filter((item) => item.sourceDate <= candidate.date)
+        .map((item) => item.id),
+    ),
   });
 
   if (memory && changes.facts.length) {
@@ -268,7 +297,6 @@ async function extractMessage(
       where: {
         id: { in: changes.resolvedItemIds },
         emailAccountId,
-        threadId: candidate.threadId,
         status: EmailItemStatus.OPEN,
       },
       data: {
@@ -295,10 +323,12 @@ export function applyGuards({
   analysis,
   late,
   participants,
+  resolvableItemIds,
 }: {
   analysis: MessageAnalysis;
   late: boolean;
   participants: Map<string, string | null>;
+  resolvableItemIds: Set<string>;
 }) {
   const keep = !analysis.ephemeral;
 
@@ -307,7 +337,9 @@ export function applyGuards({
       ? analysis.facts.map((fact) => fact.trim()).filter(Boolean)
       : [],
     threadSummary: late ? null : analysis.threadSummary.trim() || null,
-    resolvedItemIds: late ? [] : analysis.resolvedItemIds,
+    resolvedItemIds: late
+      ? []
+      : analysis.resolvedItemIds.filter((id) => resolvableItemIds.has(id)),
     newItems:
       keep && !late
         ? analysis.newItems
@@ -404,23 +436,15 @@ function getAudience({
   message,
   sent,
   userEmail,
-  queueSenders,
+  fromQueue,
 }: {
   message: ParsedMessage;
   sent: boolean;
   userEmail: string;
-  queueSenders: string[];
+  fromQueue: boolean;
 }): EmailAudience {
   if (sent) return EmailAudience.DIRECT;
-
-  const from = message.headers.from ?? "";
-  if (
-    queueSenders.some((sender) =>
-      isSameEmailAddress(extractEmailAddress(from), sender),
-    )
-  ) {
-    return EmailAudience.LIST;
-  }
+  if (fromQueue) return EmailAudience.LIST;
 
   const to = extractEmailAddresses(message.headers.to ?? "");
   if (to.some((address) => isSameEmailAddress(address, userEmail))) {
@@ -433,6 +457,38 @@ function getAudience({
   }
 
   return EmailAudience.LIST;
+}
+
+function isQueueSender(message: ParsedMessage, queueSenders: string[]) {
+  const from = extractEmailAddress(message.headers.from ?? "");
+  return queueSenders.some((sender) => isSameEmailAddress(from, sender));
+}
+
+/** Open items from the sender's other threads, newest first. */
+function getSenderOpenItems({
+  emailAccountId,
+  candidate,
+}: {
+  emailAccountId: string;
+  candidate: PendingMessage;
+}) {
+  return prisma.$queryRaw<
+    Prisma.EmailItemGetPayload<{ select: typeof openItemSelect }>[]
+  >`
+    SELECT i."id", i."type", i."text", i."owner", i."counterpartyEmail",
+      i."dueDate", i."sourceDate"
+    FROM "EmailItem" i
+    JOIN "EmailMessage" m
+      ON m."emailAccountId" = i."emailAccountId"
+      AND m."threadId" = i."threadId"
+      AND m."messageId" = i."messageId"
+    WHERE i."emailAccountId" = ${emailAccountId}
+      AND i."status" = 'OPEN'
+      AND i."threadId" <> ${candidate.threadId}
+      AND m."from" = ${candidate.from}
+    ORDER BY i."sourceDate" DESC
+    LIMIT ${SENDER_ITEMS_LIMIT}
+  `;
 }
 
 function isContentFilterError(error: unknown) {

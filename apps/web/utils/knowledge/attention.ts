@@ -11,13 +11,18 @@ import prisma from "@/utils/prisma";
 
 const WINDOW_DAYS = 30;
 const DUE_SOON_DAYS = 3;
+// Mail rarely confirms that something was done (a training completed, a
+// patch applied), so an item well past its due date is more likely stale
+// than urgent. It stays listable through list_email_items.
+const OVERDUE_GRACE_DAYS = 7;
 const DEFAULT_LIMIT = 20;
 
 /**
  * What needs the user's attention, ranked, from precomputed state only (no
  * LLM on the read path): open commitments, requests, and deadlines from mail
  * personally addressed to the user, plus threads the reply tracker holds
- * open. Covers the last 30 days and anything with an upcoming due date.
+ * open. Covers undated items from the last 30 days and dated items due from
+ * a week ago onward.
  */
 export async function getAttention({
   emailAccountId,
@@ -44,8 +49,8 @@ export async function getAttention({
         },
         audience: { in: [EmailAudience.DIRECT, EmailAudience.CC] },
         OR: [
-          { sourceDate: { gte: windowStart } },
-          { dueDate: { gte: windowStart } },
+          { dueDate: null, sourceDate: { gte: windowStart } },
+          { dueDate: { gte: subDays(now, OVERDUE_GRACE_DAYS) } },
         ],
       },
       select: {

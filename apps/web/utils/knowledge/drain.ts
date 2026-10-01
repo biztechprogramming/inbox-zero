@@ -26,6 +26,10 @@ export const DRAIN_BATCH_SIZE = 15;
 const THREAD_CONCURRENCY = 3;
 // Outlives the route's max duration, so a killed iteration frees the lock.
 const LOCK_TTL_SECONDS = 360;
+// No message starts after this, so an iteration ends inside the route's
+// 300s budget (and the lock TTL) even when calls run slow: the deadline plus
+// one message's worst case (the 90s analysis timeout and its I/O).
+const ITERATION_DEADLINE_MS = 180_000;
 
 type Cursor = NonNullable<KnowledgeDrainBody["cursor"]>;
 
@@ -110,7 +114,7 @@ async function drainBatch({
   if (!context) return { processed: 0, more: false };
 
   const pending = await prisma.$queryRaw<PendingMessage[]>`
-    SELECT "messageId", "threadId", "sent", "date"
+    SELECT "messageId", "threadId", "from", "sent", "date"
     FROM "EmailMessage"
     WHERE ${pendingKnowledgeSql(emailAccountId)}
       AND "threadId" = ANY(${threads.map((thread) => thread.threadId)})
@@ -139,21 +143,24 @@ async function drainBatch({
   }
 
   // Order only matters inside a thread, so threads run side by side.
+  const deadline = Date.now() + ITERATION_DEADLINE_MS;
   const results = await mapWithConcurrency(
     batches,
     THREAD_CONCURRENCY,
-    ({ messages }) => extractThreadKnowledge({ context, messages }),
+    ({ messages }) => extractThreadKnowledge({ context, messages, deadline }),
   );
 
-  // The cursor may only pass a prefix of finished threads: a partial thread
-  // must be selected again. A failed thread counts as finished; its
-  // remaining messages are retried by the next pass. A full page of threads,
-  // or one the budget didn't reach, may have more below it.
+  // The cursor may only pass a prefix of finished threads: a thread cut off
+  // by the budget or the deadline must be selected again. A failed thread
+  // counts as finished; its remaining messages are retried by the next
+  // pass. A full page of threads, or one the budget didn't reach, may have
+  // more below it.
   let nextCursor = cursor;
   let more =
     threads.length === DRAIN_BATCH_SIZE || batches.length < threads.length;
   for (const [index, { thread, partial }] of batches.entries()) {
-    if (partial && !results[index].failed) {
+    const result = results[index];
+    if (!result.failed && (partial || !result.complete)) {
       more = true;
       break;
     }

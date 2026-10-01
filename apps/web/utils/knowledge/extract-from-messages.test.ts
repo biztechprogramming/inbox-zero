@@ -51,9 +51,22 @@ function pending(messageId: string, overrides = {}) {
   return {
     messageId,
     threadId: "thread-1",
+    from: "rosa@northwind.example",
     sent: false,
     date: new Date("2026-09-10T12:00:00Z"),
     ...overrides,
+  };
+}
+
+function openItem(id: string, sourceDate = "2026-09-01T00:00:00Z") {
+  return {
+    id,
+    type: "REQUEST",
+    text: "Send the proof.",
+    owner: "THEM",
+    counterpartyEmail: null,
+    dueDate: null,
+    sourceDate: new Date(sourceDate),
   };
 }
 
@@ -76,13 +89,17 @@ function analysis(overrides: Partial<MessageAnalysis> = {}): MessageAnalysis {
   };
 }
 
-async function run(messages = [pending("m1")]) {
+async function run(messages = [pending("m1")], deadline = Date.now() + 60_000) {
   const context = await createExtractionContext({
     emailAccountId: "account-1",
     logger,
   });
   if (!context) throw new Error("no context");
-  return extractThreadKnowledge({ context, messages });
+  return extractThreadKnowledge({
+    context,
+    messages,
+    deadline,
+  });
 }
 
 describe("extractThreadKnowledge", () => {
@@ -98,7 +115,8 @@ describe("extractThreadKnowledge", () => {
     } as never);
     prisma.emailMessage.findFirst.mockResolvedValue(null);
     prisma.emailMessage.update.mockResolvedValue({} as never);
-    prisma.emailItem.findMany.mockResolvedValue([]);
+    prisma.emailItem.findMany.mockResolvedValue([openItem("item-1")] as never);
+    prisma.$queryRaw.mockResolvedValue([]);
     getMessage.mockResolvedValue({
       id: "m1",
       headers: {
@@ -119,7 +137,7 @@ describe("extractThreadKnowledge", () => {
   it("stores facts, items, summary, and the marker from one analysis", async () => {
     const result = await run();
 
-    expect(result).toEqual({ processed: 1, failed: false });
+    expect(result).toEqual({ processed: 1, failed: false, complete: true });
     // Long-thread contract: only the fresh fragment is analyzed.
     expect(getEmailForLLM).toHaveBeenCalledWith(
       expect.anything(),
@@ -172,7 +190,7 @@ describe("extractThreadKnowledge", () => {
     );
   });
 
-  it("resolves open items scoped to the thread and records who resolved them", async () => {
+  it("resolves open items it was shown and records who resolved them", async () => {
     analyzeMessageKnowledge.mockResolvedValue(
       analysis({ newItems: [], resolvedItemIds: ["item-1"] }),
     );
@@ -183,7 +201,6 @@ describe("extractThreadKnowledge", () => {
       where: {
         id: { in: ["item-1"] },
         emailAccountId: "account-1",
-        threadId: "thread-1",
         status: "OPEN",
       },
       data: {
@@ -192,6 +209,43 @@ describe("extractThreadKnowledge", () => {
         resolvedByMessageId: "m1",
       },
     });
+  });
+
+  it("shows the sender's open items from other threads but only resolves older ones", async () => {
+    prisma.emailItem.findMany.mockResolvedValue([]);
+    prisma.$queryRaw.mockResolvedValue([
+      openItem("older-reminder", "2026-09-01T00:00:00Z"),
+      openItem("newer-reminder", "2026-09-20T00:00:00Z"),
+    ] as never);
+    analyzeMessageKnowledge.mockResolvedValue(
+      analysis({
+        newItems: [],
+        resolvedItemIds: ["older-reminder", "newer-reminder"],
+      }),
+    );
+
+    await run();
+
+    expect(
+      analyzeMessageKnowledge.mock.calls[0][0].openItems.map(
+        (item: { id: string }) => item.id,
+      ),
+    ).toEqual(["older-reminder", "newer-reminder"]);
+    expect(prisma.emailItem.updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ["older-reminder"] } }),
+      }),
+    );
+  });
+
+  it("does not treat a shared queue's other tickets as a series", async () => {
+    prisma.emailAccount.findUnique.mockResolvedValue({
+      knowledgeQueueSenders: ["rosa@northwind.example"],
+    } as never);
+
+    await run();
+
+    expect(prisma.$queryRaw).not.toHaveBeenCalled();
   });
 
   it("stores nothing but lifecycle output for ephemeral mail", async () => {
@@ -289,12 +343,19 @@ describe("extractThreadKnowledge", () => {
     expect(prisma.emailMessage.update).toHaveBeenCalledTimes(1);
   });
 
+  it("starts no message once the iteration deadline has passed", async () => {
+    const result = await run([pending("m1")], Date.now() - 1);
+
+    expect(result).toEqual({ processed: 0, failed: false, complete: false });
+    expect(analyzeMessageKnowledge).not.toHaveBeenCalled();
+  });
+
   it("stops the thread at the first failure so later messages wait for it", async () => {
     analyzeMessageKnowledge.mockRejectedValueOnce(new Error("provider down"));
 
     const result = await run([pending("m1"), pending("m2")]);
 
-    expect(result).toEqual({ processed: 0, failed: true });
+    expect(result).toEqual({ processed: 0, failed: true, complete: false });
     expect(analyzeMessageKnowledge).toHaveBeenCalledTimes(1);
     expect(prisma.emailMessage.update).not.toHaveBeenCalled();
   });
@@ -315,7 +376,7 @@ describe("extractThreadKnowledge", () => {
 
     const result = await run([pending("m1"), pending("m2")]);
 
-    expect(result).toEqual({ processed: 2, failed: false });
+    expect(result).toEqual({ processed: 2, failed: false, complete: true });
     expect(prisma.emailMessage.update).toHaveBeenCalledTimes(2);
   });
 });
@@ -343,6 +404,7 @@ describe("applyGuards", () => {
       analysis: item({ counterpartyEmail: "made-up@elsewhere.example" }),
       late: false,
       participants,
+      resolvableItemIds: new Set(),
     });
 
     expect(newItems[0]).toMatchObject({
@@ -360,6 +422,7 @@ describe("applyGuards", () => {
       analysis: item({ dueDate }),
       late: false,
       participants,
+      resolvableItemIds: new Set(),
     });
 
     expect(newItems[0].dueDate).toBeNull();
@@ -370,6 +433,7 @@ describe("applyGuards", () => {
       analysis: item({ type: "decision", owner: "me" }),
       late: false,
       participants,
+      resolvableItemIds: new Set(),
     });
 
     expect(newItems[0]).toMatchObject({ type: "DECISION", owner: null });

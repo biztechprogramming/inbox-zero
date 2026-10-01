@@ -52,6 +52,7 @@ function messages(threadId: string, count: number) {
   return Array.from({ length: count }, (_, index) => ({
     messageId: `${threadId}-m${index}`,
     threadId,
+    from: "sender@test.com",
     sent: false,
     date: new Date(`2026-09-01T0${index}:00:00Z`),
   }));
@@ -75,6 +76,7 @@ describe("runKnowledgeDrain", () => {
     extractThreadKnowledge.mockImplementation(async ({ messages }) => ({
       processed: messages.length,
       failed: false,
+      complete: true,
     }));
   });
 
@@ -168,6 +170,26 @@ describe("runKnowledgeDrain", () => {
     expect(extractThreadKnowledge).toHaveBeenCalledTimes(1);
     expect(enqueueKnowledgeDrain).toHaveBeenCalledWith({
       body: { emailAccountId, cursor: undefined },
+      logger,
+    });
+  });
+
+  it("resumes a thread the iteration deadline cut short", async () => {
+    mockPending(
+      [thread("t1", 20), thread("t2", 10)],
+      [...messages("t1", 1), ...messages("t2", 3)],
+    );
+    extractThreadKnowledge
+      .mockResolvedValueOnce({ processed: 1, failed: false, complete: true })
+      .mockResolvedValueOnce({ processed: 1, failed: false, complete: false });
+
+    await runKnowledgeDrain({ emailAccountId, logger });
+
+    expect(enqueueKnowledgeDrain).toHaveBeenCalledWith({
+      body: {
+        emailAccountId,
+        cursor: { date: thread("t1", 20).latest, threadId: "t1" },
+      },
       logger,
     });
   });

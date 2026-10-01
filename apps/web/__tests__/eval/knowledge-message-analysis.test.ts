@@ -20,7 +20,9 @@ import type { EmailAccountWithAI } from "@/utils/llms/types";
 vi.mock("server-only", () => ({}));
 
 const shouldRunEval = shouldRunEvalTests();
-const TIMEOUT = 90_000;
+// Above the analysis call's own 90s abort, so a provider hang surfaces as
+// that abort instead of an opaque test timeout.
+const TIMEOUT = 150_000;
 
 const CLIENT = "rosa@northwind.example";
 const COLLEAGUE = "sam@acme.example";
@@ -56,6 +58,29 @@ describe.runIf(shouldRunEval)("Eval: knowledge message analysis", () => {
 
         const pass = result.ephemeral;
         record("ticket status ping", pass, result);
+        expect(pass).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    test(
+      "classifies a monitoring alert as ephemeral even when it suggests a fix",
+      async () => {
+        const result = await analyze(emailAccount, {
+          from: "Power BI <no-reply-powerbi@microsoft.example>",
+          subject: "fabric-east capacity is at 100 percent",
+          content:
+            "Power BI\n\nMANAGE YOUR POWER BI CAPACITY TO AVOID REDUCED REPORT PERFORMANCE\n\nYour fabric-east capacity is at 100 percent, which may cause your reports to take longer to load or be less responsive.\n\nTo avoid reduced performance, review your usage report and reduce your usage.\n\nManage capacity >\n\nIf you're unable to reduce your usage, enable autoscaling (see pricing) or consider upgrading to a larger capacity.\n\nDid you find this email helpful? Yes No\n\nPrivacy Statement",
+          // Facts tying the user to the affected system are what tempt the
+          // model into turning the alert into the user's task.
+          knownFacts: [
+            "The user administers the company's fabric-east Power BI capacity.",
+            "fabric-east is sized at F8; upgrading to F16 would cost about $2,100 per month.",
+          ],
+        });
+
+        const pass = result.ephemeral;
+        record("monitoring alert is ephemeral", pass, result);
         expect(pass).toBe(true);
       },
       TIMEOUT,
@@ -166,6 +191,40 @@ describe.runIf(shouldRunEval)("Eval: knowledge message analysis", () => {
           result.resolvedItemIds.includes("item-a") &&
           !result.resolvedItemIds.includes("item-b");
         record("follow-up resolves its item", pass, result.resolvedItemIds);
+        expect(pass).toBe(true);
+      },
+      TIMEOUT,
+    );
+
+    test(
+      "lets a resolved-alert notice close the item its firing alert created",
+      async () => {
+        const result = await analyze(emailAccount, {
+          from: "Azure Monitor <azure-noreply@microsoft.example>",
+          subject:
+            "Resolved: Sev1 Azure Monitor Alert queue-depth-high on orders-worker",
+          content:
+            "Your Azure Monitor alert was resolved.\nAlert rule: queue-depth-high\nSeverity: Sev1\nResource: orders-worker\nMonitor condition: Resolved\nThe condition that triggered this alert is no longer met.",
+          openItems: [
+            openItem(
+              "item-alert",
+              "REQUEST",
+              "ME",
+              "The user needs to investigate the Sev1 queue-depth-high alert on orders-worker.",
+            ),
+            openItem(
+              "item-other",
+              "DEADLINE",
+              "ME",
+              "Migrate custom log ingestion to the DCR-based API before the Data Collector API retires.",
+            ),
+          ],
+        });
+
+        const pass =
+          result.resolvedItemIds.includes("item-alert") &&
+          !result.resolvedItemIds.includes("item-other");
+        record("resolved alert closes its item", pass, result.resolvedItemIds);
         expect(pass).toBe(true);
       },
       TIMEOUT,
@@ -430,6 +489,7 @@ function analyze(
     date = new Date("2026-09-15T12:00:00Z"),
     threadSummary = null,
     openItems = [],
+    knownFacts = [],
   }: {
     sent?: boolean;
     from: string;
@@ -439,6 +499,7 @@ function analyze(
     date?: Date;
     threadSummary?: string | null;
     openItems?: OpenItemContext[];
+    knownFacts?: string[];
   },
 ) {
   return analyzeMessageKnowledge({
@@ -454,7 +515,7 @@ function analyze(
     sent,
     threadSummary,
     openItems,
-    knownFacts: [],
+    knownFacts,
   });
 }
 
@@ -473,6 +534,7 @@ function guard(analysis: MessageAnalysis, participants: string[] = []) {
     analysis,
     late: false,
     participants: new Map(participants.map((address) => [address, null])),
+    resolvableItemIds: new Set(),
   });
 }
 
