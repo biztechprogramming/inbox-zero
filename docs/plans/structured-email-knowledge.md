@@ -1,9 +1,11 @@
 # Plan: Structured email knowledge (typed items, thread state, attention view)
 
-Status: approved by the user on 2026-10-01 and implemented: extraction
-prompt, the three MCP tools, the `search_knowledge` description, the
-server-instructions tweak, and the `default` tier for knowledge extraction.
-Item types stay as proposed. Verified on the dev Outlook account (§8).
+Status: the user approved these on 2026-10-01 and they are implemented: the
+extraction prompt, the three MCP tools, the `search_knowledge` description,
+the server-instructions tweak, and the item types. Moving extraction to the
+`default` tier was **not** approved. The economy + Kev gate and its fallback
+routing (§2, "Model tier") are implemented on the work branch and await
+approval. Verified on the dev Outlook account (§8).
 
 Builds on [mem0-email-knowledge-base.md](./mem0-email-knowledge-base.md).
 
@@ -168,8 +170,8 @@ stays null. Extracted rows keep their marker.
 `utils/knowledge/analyze-message.ts` → `analyzeMessageKnowledge()` goes through
 `createGenerateObject`, which gives it compact untrusted-content hardening,
 usage/cost tracking, and every configured provider.
-`LlmUseCase.KnowledgeExtraction` moves from the `economy` tier to `default`
-(see "Model tier" below). It replaces mem0's internal extraction call, so
+`LlmUseCase.KnowledgeExtraction` stays on `economy`, checked by the Kev gate.
+`default` is used only when Kev is unavailable (see "Model tier" below). It replaces mem0's internal extraction call, so
 cost per message stays at one LLM call:
 
 | step | before | after |
@@ -258,17 +260,81 @@ Hard guards enforced in code rather than trusted to the prompt: `ephemeral` ⇒
 facts and newItems dropped; counterparty must be a header participant;
 `dueDate` must parse; resolved ids must map to an open item in the same thread.
 
-### Model tier (routing change, approved)
+### Model tier: economy + Kev gate, default-tier fallback (needs approval)
 
-On the eval (§7), 3 runs × 13 cases, GPT-5.4 Nano (this deployment's
-`economy` model) failed the same cases every run: it repeated an obligation
-already in `open_items`, and it stored the email's envelope and dial-in
-numbers as facts even when told not to. GPT-5.6 Luna (`default`) passed
-39/39. On this deployment the two are priced within 5% of each other
-($0.20 / $1.20–1.25 per M tokens; the trial measured ~2.0k input and ~0.2k
-output tokens per message, about $0.0007 each). The use case therefore moves
-to `default`. On a deployment whose default model is much pricier, this is
-the one line to revisit.
+The user did not approve moving extraction to `default`. Extraction stays on
+`economy` (GPT-5.4 Nano here), and the System One decision model (Kev) checks
+the judgments Nano gets wrong. Kev can't generate text, so the summary,
+facts, and item text stay with the LLM. Kev only filters the LLM's output. It
+goes through the existing `askSystemOne` client (`utils/llms/system-one.ts`),
+which returns null when JEV is disabled or a call fails. No new client.
+
+**Gates** (`utils/knowledge/kev-gate.ts`). Two Kev calls per message run in
+parallel. Both are skipped when the analysis has no facts and no new items,
+because there is then nothing to keep or drop.
+
+1. **Ephemeral** (email call; state = the email as shown to the LLM, first
+   2,000 chars). Question (noul):
+
+   ```
+   Is this email only a system notification (an alert, a status change, a receipt, or a promotion) with no request for the reader, no deadline for the reader, and no lasting information about people?
+   ```
+
+   p ≥ 0.6 → ephemeral; p ≤ 0.5 → not ephemeral; in between, the LLM's flag
+   stands. Calibration: notifications scored 0.71–0.89, and people's replies
+   or real asks 0.06–0.47. The one outlier was marketing at 0.29, which the
+   newsletter filter already removes before extraction.
+
+2. **Fact kind** (statements call; state = the facts, *without* the email).
+   With the email alongside, Kev labels every fact "about this email". One
+   choice question per fact: `What kind of statement is F<n>?` Criteria:
+
+   ```
+   lasting: Lasting information: someone's role, company, or contact details, a price, a policy, a preference, or how the user writes to someone.
+   this_email: Only about this particular email: who sent it, who received it, or who is involved in it.
+   logistics: A one-off meeting or call arrangement: a time, a join link, a dial-in number, a conference ID, or an agenda.
+   ```
+
+   A fact is kept only when Kev's top choice is `lasting`, or Kev gave no
+   answer for it.
+
+3. **Duplicate item** (statements call; state also lists open items `[O<n>]`
+   and candidate items `[C<n>]`). One noul per candidate × open item:
+
+   ```
+   Is candidate item C<n> already covered by open item O<m>, meaning the same task by the same people, even if worded differently or with a due date added?
+   ```
+
+   p ≥ 0.4 → the candidate is dropped, unless the LLM also resolved that open
+   item in the same output (resolve-and-re-add is how a change is recorded).
+   Calibration: duplicates scored 0.58–0.93 and distinct obligations
+   0.04–0.15. The first wording tried ("Do open item O and candidate item C
+   describe the same obligation?") scored an obvious paraphrase at only 0.48.
+
+**Fallback routing** (`analyzeMessageKnowledge`):
+
+- `JEV_ENABLED` false → the `default` tier writes the analysis directly
+  (new use case `KnowledgeExtractionFallback`), with no Kev call and no wasted
+  economy call.
+- JEV enabled but a Kev call fails → that message is re-run on the `default`
+  tier. During a Kev outage this costs an economy call plus a default call per
+  message (measured: analysis p50 7.1s instead of 3.5s). A per-iteration
+  circuit breaker could skip the doomed economy call; it isn't built because
+  outages haven't been long enough to warrant it.
+
+**Results** (17-case eval, 3 runs each = 51 cases; Luna is this deployment's
+`default`):
+
+| configuration | pass | misses |
+|---|---|---|
+| Nano alone | 44/51 (86%) | envelope/logistics facts 3/3, signature facts 2/3, resolved alert 1/3, decision 1/3 |
+| Nano + Kev | 49/51 (96%) in each of the last two rounds | one due date not resolved, one multi-recipient split (Nano generation misses Kev can't repair) |
+| Luna / Kev-disabled fallback | 50/51 (98%) | one decision missed |
+| Kev unreachable (falls back) | 17/17 | — |
+
+Kev latency on 40 sampled real messages (read-only run, nothing written):
+p50 770ms, p95 1.41s, max 1.73s. 6 of the 40 needed no Kev call. Analysis
+including Kev: p50 3.5s, p95 5.0s.
 
 What changes relative to the current mem0 `CUSTOM_INSTRUCTIONS`: commitments
 and deadlines move from free-text facts into typed items; ephemera gets an

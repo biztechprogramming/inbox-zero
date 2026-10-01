@@ -12,6 +12,7 @@ import {
 } from "@/utils/knowledge/analyze-message";
 import { applyGuards } from "@/utils/knowledge/extract-from-messages";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
+import { createScopedLogger } from "@/utils/logger";
 
 // pnpm test-ai eval/knowledge-message-analysis
 // Runs on the "default" tier. GPT-5.4 Nano (economy) consistently fails the
@@ -20,6 +21,7 @@ import type { EmailAccountWithAI } from "@/utils/llms/types";
 vi.mock("server-only", () => ({}));
 
 const shouldRunEval = shouldRunEvalTests();
+const evalLogger = createScopedLogger("eval/knowledge-message-analysis");
 // Above the analysis call's own 90s abort, so a provider hang surfaces as
 // that abort instead of an opaque test timeout.
 const TIMEOUT = 150_000;
@@ -503,6 +505,7 @@ function analyze(
   },
 ) {
   return analyzeMessageKnowledge({
+    logger: evalLogger,
     emailAccount,
     email: {
       id: "eval-message",

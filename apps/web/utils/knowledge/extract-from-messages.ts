@@ -218,6 +218,7 @@ async function extractMessage(
     : [];
 
   const analysis = await analyzeMessageKnowledge({
+    logger: context.logger,
     emailAccount,
     email: { ...email, date: candidate.date },
     sent: candidate.sent,

@@ -1,7 +1,10 @@
 import { z } from "zod";
+import { env } from "@/env";
+import { gateMessageAnalysis } from "@/utils/knowledge/kev-gate";
 import { createGenerateObject } from "@/utils/llms";
 import type { EmailAccountWithAI } from "@/utils/llms/types";
 import { getModelForUseCase, LlmUseCase } from "@/utils/llms/use-cases";
+import type { Logger } from "@/utils/logger";
 import { escapeHtml } from "@/utils/string";
 import { stringifyEmail } from "@/utils/stringify-email";
 import type { EmailForLLM } from "@/utils/types";
@@ -12,6 +15,9 @@ import type { EmailForLLM } from "@/utils/types";
 export const MAX_CONTENT_LENGTH = 10_000;
 // A hung provider call would otherwise hold the account's drain lock.
 const ANALYSIS_TIMEOUT_MS = 90_000;
+// Kev judges ephemera from the opening of the email, like other System One
+// callers; its context is smaller than the LLM's.
+const KEV_EMAIL_LENGTH = 2000;
 
 const instructions = `You maintain structured knowledge about one user's mailbox, one email at a time. You are given the email (only the text it adds to its thread; quoted history is removed), the running summary of its thread so far, open items from its thread and from other recent mail by the same sender, and facts already stored on related topics.
 
@@ -56,33 +62,60 @@ export type OpenItemContext = {
   dueDate: Date | null;
 };
 
-/**
- * One structured pass over one message: ephemera classification, the
- * thread's running summary, durable facts for Mem0, new typed items, and
- * which of the thread's open items this message resolves.
- *
- * Open items are shown under positional ids and mapped back here, so the
- * model never sees row ids and an invented id resolves nothing.
- */
-export async function analyzeMessageKnowledge({
-  emailAccount,
-  email,
-  sent,
-  threadSummary,
-  openItems,
-  knownFacts,
-}: {
+type AnalysisInput = {
   emailAccount: EmailAccountWithAI & { name?: string | null };
   email: EmailForLLM;
   sent: boolean;
   threadSummary: string | null;
   openItems: OpenItemContext[];
   knownFacts: string[];
-}): Promise<MessageAnalysis> {
-  const modelOptions = getModelForUseCase(
-    emailAccount.user,
-    LlmUseCase.KnowledgeExtraction,
-  );
+};
+
+/**
+ * One structured pass over one message: ephemera classification, the
+ * thread's running summary, durable facts for Mem0, new typed items, and
+ * which of the thread's open items this message resolves.
+ *
+ * The economy model writes the analysis and the System One decision model
+ * (Kev) checks the judgments it gets wrong. When Kev is disabled or fails,
+ * the fallback model, which makes those judgments reliably on its own,
+ * writes it instead.
+ */
+export async function analyzeMessageKnowledge({
+  logger,
+  ...input
+}: AnalysisInput & { logger: Logger }): Promise<MessageAnalysis> {
+  if (env.JEV_ENABLED) {
+    const draft = await generateAnalysis(input, LlmUseCase.KnowledgeExtraction);
+    const gated = await gateMessageAnalysis({
+      analysis: draft,
+      emailState: `<email>\n${stringifyEmail(input.email, KEV_EMAIL_LENGTH)}\n</email>`,
+      openItems: input.openItems,
+      logger,
+    });
+    if (gated) return gated;
+    logger.warn("Kev unavailable; re-running knowledge analysis on fallback");
+  }
+
+  return generateAnalysis(input, LlmUseCase.KnowledgeExtractionFallback);
+}
+
+/**
+ * Open items are shown under positional ids and mapped back here, so the
+ * model never sees row ids and an invented id resolves nothing.
+ */
+async function generateAnalysis(
+  {
+    emailAccount,
+    email,
+    sent,
+    threadSummary,
+    openItems,
+    knownFacts,
+  }: AnalysisInput,
+  useCase: LlmUseCase,
+): Promise<MessageAnalysis> {
+  const modelOptions = getModelForUseCase(emailAccount.user, useCase);
 
   const generateObject = createGenerateObject({
     emailAccount,

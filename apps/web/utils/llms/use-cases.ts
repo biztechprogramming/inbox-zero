@@ -29,6 +29,9 @@ export const LlmUseCase = {
   EmailReportUserPersona: "email-report-user-persona",
   FindSnippets: "find-snippets",
   KnowledgeExtraction: "knowledge-extraction",
+  // Used when the System One gate that checks economy-tier output is
+  // unavailable, so extraction stays correct without it.
+  KnowledgeExtractionFallback: "knowledge-extraction-fallback",
   LearnedWritingStyleCompaction: "learned-writing-style-compaction",
   McpAgent: "mcp-agent",
   MeetingBriefing: "meeting-briefing",
@@ -78,7 +81,8 @@ export const LLM_USE_CASE_MODEL_TYPES = {
   [LlmUseCase.EmailReportSummaryGeneration]: "economy",
   [LlmUseCase.EmailReportUserPersona]: "default",
   [LlmUseCase.FindSnippets]: "chat",
-  [LlmUseCase.KnowledgeExtraction]: "default",
+  [LlmUseCase.KnowledgeExtraction]: "economy",
+  [LlmUseCase.KnowledgeExtractionFallback]: "default",
   [LlmUseCase.LearnedWritingStyleCompaction]: "economy",
   [LlmUseCase.McpAgent]: "economy",
   [LlmUseCase.MeetingBriefing]: "default",
