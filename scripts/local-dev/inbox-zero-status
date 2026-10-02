@@ -1,0 +1,79 @@
+#!/bin/zsh
+# Reports whether the Inbox Zero web app, worker, and their Docker services are up, and offers to start what isn't.
+
+domain="gui/$(id -u)"
+agents=(com.inboxzero.web com.inboxzero.worker)
+containers=(inbox-zero-dev-db inbox-zero-dev-redis)
+down_agents=()
+docker_down=0
+
+pid_of() { launchctl list | awk -v l="$1" '$3==l {print $1}'; }
+
+echo "== Docker =="
+if ! docker info >/dev/null 2>&1; then
+  echo "  Docker Desktop: NOT RUNNING"
+  docker_down=1
+else
+  for c in $containers; do
+    state=$(docker inspect -f '{{.State.Status}}' $c 2>/dev/null || echo missing)
+    echo "  $c: $state"
+    [[ $state == running ]] || docker_down=1
+  done
+fi
+
+echo "== Inbox Zero =="
+for a in $agents; do
+  pid=$(pid_of $a)
+  log=~/Library/Logs/inbox-zero-${a##*.}.log
+  if [[ -z $pid ]]; then
+    echo "  $a: NOT LOADED"
+    down_agents+=$a
+  elif [[ $pid == - ]]; then
+    echo "  $a: NOT RUNNING (last exit $(launchctl list | awk -v l=$a '$3==l {print $2}'))"
+    down_agents+=$a
+  else
+    echo "  $a: running (pid $pid)"
+  fi
+  if [[ $a == com.inboxzero.web && -n $pid && $pid != - ]]; then
+    code=$(curl -s -m 10 -o /dev/null -w '%{http_code}' http://localhost:3000)
+    if [[ $code == [23]* ]]; then
+      echo "    http://localhost:3000 -> $code"
+    else
+      echo "    http://localhost:3000 -> NO RESPONSE ($code); still compiling or hung"
+    fi
+  fi
+done
+
+if (( docker_down == 0 && ${#down_agents} == 0 )); then
+  echo "\nAll good."
+  exit 0
+fi
+
+for a in $down_agents; do
+  echo "\n-- last 15 lines of ~/Library/Logs/inbox-zero-${a##*.}.log --"
+  tail -15 ~/Library/Logs/inbox-zero-${a##*.}.log 2>/dev/null || echo "  (no log yet)"
+done
+
+echo
+read "reply?Start what's down? [y/N] "
+[[ $reply == [yY]* ]] || exit 1
+
+if (( docker_down )); then
+  if ! docker info >/dev/null 2>&1; then
+    echo "Starting Docker Desktop..."
+    open -a Docker
+    for i in {1..60}; do docker info >/dev/null 2>&1 && break; sleep 2; done
+  fi
+  docker start $containers >/dev/null && echo "Containers started."
+fi
+
+for a in $down_agents; do
+  if [[ -z $(pid_of $a) ]]; then
+    launchctl bootstrap $domain ~/Library/LaunchAgents/$a.plist
+  else
+    launchctl kickstart -k $domain/$a
+  fi
+  echo "Started $a."
+done
+
+echo "Web takes ~30s to come up. Re-run inbox-zero-status to confirm."
