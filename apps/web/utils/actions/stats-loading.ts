@@ -97,6 +97,8 @@ export async function loadEmails(
     };
   }
 
+  // Older history is still unchecked when newer mail used the page budget.
+  hasMoreBefore = pages >= maxPages;
   nextPageToken = undefined;
   while (pages < maxPages) {
     logger.info("Before Page", { pages, nextPageToken });

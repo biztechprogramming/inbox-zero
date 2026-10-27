@@ -1,5 +1,10 @@
 import { publishLocalMailHint } from "@/utils/redis/local-mail-hints";
+import { markGmailHistoryCatchUp } from "@/utils/redis/gmail-history-catch-up";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+vi.mock("@/utils/redis/gmail-history-catch-up", () => ({
+  markGmailHistoryCatchUp: vi.fn().mockResolvedValue(undefined),
+}));
 
 vi.mock("@/utils/redis/local-mail-hints", () => ({
   publishLocalMailHint: vi.fn().mockResolvedValue(undefined),
@@ -84,7 +89,7 @@ describe("Google webhook route", () => {
       token: "test-google-webhook-token",
     });
 
-    const response = await POST(request as any);
+    const response = await POST(request as any, {} as never);
     const body = await response.json();
 
     expect(response.status).toBe(503);
@@ -98,7 +103,7 @@ describe("Google webhook route", () => {
       token: "invalid-token",
     });
 
-    const response = await POST(request as any);
+    const response = await POST(request as any, {} as never);
     const body = await response.json();
 
     expect(response.status).toBe(403);
@@ -114,16 +119,34 @@ describe("Google webhook route", () => {
       historyId: 123,
     });
 
-    const response = await POST(request as any);
+    const response = await POST(request as any, {} as never);
     const body = await response.json();
 
     expect(response.status).toBe(200);
     expect(body).toEqual({ ok: true });
     expect(processHistoryForUserMock).toHaveBeenCalledWith(
-      { emailAddress: "user@example.com", historyId: 123 },
+      { emailAddress: "user@example.com", historyId: "123" },
       { preloadedEmailAccount: null },
       expect.anything(),
     );
+  });
+
+  it.each([
+    { name: "missing historyId", data: { emailAddress: "user@example.com" } },
+    { name: "missing emailAddress", data: { historyId: "123" } },
+    {
+      name: "non-numeric historyId",
+      data: { emailAddress: "user@example.com", historyId: "abc" },
+    },
+    { name: "unrelated payload", data: { test: true } },
+  ])("rejects a malformed Pub/Sub payload ($name)", async ({ data }) => {
+    const request = createRequest({ token: "test-google-webhook-token", data });
+
+    const response = await POST(request as any, {} as never);
+
+    expect(response.status).toBe(400);
+    expect(processHistoryForUserMock).not.toHaveBeenCalled();
+    expect(getWebhookEmailAccountMock).not.toHaveBeenCalled();
   });
 
   it("acknowledges valid requests and processes history asynchronously", async () => {
@@ -135,7 +158,7 @@ describe("Google webhook route", () => {
       historyId: 123,
     });
 
-    const response = await POST(request as any);
+    const response = await POST(request as any, {} as never);
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -145,9 +168,30 @@ describe("Google webhook route", () => {
       expect.anything(),
     );
     expect(runWithBackgroundLoggerFlushMock).toHaveBeenCalledTimes(1);
+    expect(markGmailHistoryCatchUp).not.toHaveBeenCalled();
     expect(processHistoryForUserMock).toHaveBeenCalledWith(
-      { emailAddress: "user@example.com", historyId: 123 },
+      { emailAddress: "user@example.com", historyId: "123" },
       { preloadedEmailAccount: { id: "account-1" } },
+      expect.anything(),
+    );
+  });
+
+  it("preserves large Gmail history IDs as opaque strings", async () => {
+    const request = createRequest({
+      token: "test-google-webhook-token",
+      emailAddress: "user@example.com",
+      historyId: "90071992547409931234",
+    });
+
+    const response = await POST(request as any, {} as never);
+
+    expect(response.status).toBe(200);
+    expect(processHistoryForUserMock).toHaveBeenCalledWith(
+      {
+        emailAddress: "user@example.com",
+        historyId: "90071992547409931234",
+      },
+      { preloadedEmailAccount: null },
       expect.anything(),
     );
   });
@@ -166,7 +210,7 @@ describe("Google webhook route", () => {
       historyId: 123,
     });
 
-    const response = await POST(request as any);
+    const response = await POST(request as any, {} as never);
     const body = await response.json();
 
     expect(response.status).toBe(200);
@@ -179,6 +223,10 @@ describe("Google webhook route", () => {
       "account-1",
       expect.anything(),
     );
+    expect(markGmailHistoryCatchUp).toHaveBeenCalledWith(
+      "account-1",
+      expect.anything(),
+    );
     expect(runWithBackgroundLoggerFlushMock).not.toHaveBeenCalled();
     expect(processHistoryForUserMock).not.toHaveBeenCalled();
   });
@@ -188,10 +236,12 @@ function createRequest({
   token,
   emailAddress = "user@example.com",
   historyId = 123,
+  data = { emailAddress, historyId },
 }: {
   token?: string;
   emailAddress?: string;
-  historyId?: number;
+  historyId?: number | string;
+  data?: unknown;
 }) {
   const requestUrl = new URL("https://example.com/api/google/webhook");
   if (token) requestUrl.searchParams.set("token", token);
@@ -203,12 +253,7 @@ function createRequest({
     },
     body: JSON.stringify({
       message: {
-        data: Buffer.from(
-          JSON.stringify({
-            emailAddress,
-            historyId,
-          }),
-        )
+        data: Buffer.from(JSON.stringify(data))
           .toString("base64url")
           .replace(/\+/g, "-")
           .replace(/\//g, "_"),

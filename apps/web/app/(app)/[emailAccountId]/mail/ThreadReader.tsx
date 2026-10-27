@@ -9,7 +9,9 @@ import {
 import dynamic from "next/dynamic";
 import { AlertCircleIcon, Loader2Icon, MailIcon } from "lucide-react";
 import { ReaderToolbar } from "@/app/(app)/[emailAccountId]/mail/ReaderToolbar";
+import { MailReaderSurface } from "@inboxzero/mail-ui/MailReaderSurface";
 import { isThreadStarred } from "@/app/(app)/[emailAccountId]/mail/star-state";
+import { useThreadTranslation } from "@/app/(app)/[emailAccountId]/mail/use-thread-translation";
 import type {
   ListThread,
   MailLayoutMode,
@@ -21,7 +23,12 @@ import { LoadingContent } from "@/components/LoadingContent";
 import { getSWRFetchErrorMessage } from "@/providers/swr-error";
 import { Button } from "@/components/ui/button";
 import type { EmailLabels } from "@/providers/email-label-types";
+import { useAccount } from "@/providers/EmailAccountProvider";
+import { useHiddenDraftMessageIds } from "@/hooks/useHiddenDraftMessageIds";
 import { extractEmailAddress, extractNameFromEmail } from "@/utils/email";
+import { PublisherDiscussion } from "@/components/team-comments/PublisherDiscussion";
+import type { OutgoingThreadMessage } from "@/utils/mail-engine/conversation-thread";
+import { getConversationSubject } from "@/utils/email/subject";
 
 const SenderContextPanel = dynamic(
   () =>
@@ -53,11 +60,11 @@ export type ThreadReaderProps = {
   messages: ThreadMessage[];
   localAvailability?: {
     missingBodyIds: Set<string>;
+    outgoing: OutgoingThreadMessage[];
+    sendOperationIds: Map<string, string>;
     hasMore: boolean;
     loadingMore: boolean;
     loadMore: () => unknown;
-    refreshing: boolean;
-    providerConfirmed: boolean;
   };
   userLabels: EmailLabels;
   layout: MailLayoutMode;
@@ -65,13 +72,18 @@ export type ThreadReaderProps = {
   onRemoveLabel?: (labelId: string) => void;
   onBackToInbox: () => void;
   onArchive: () => void;
+  onMoveToInbox?: () => void;
   isUnread: boolean;
   onMarkRead: () => void;
   onMarkUnread: () => void;
   /** Refreshes the open thread after a reply is sent or a draft changes. */
   refetch: () => void;
   /** Opens a different provider thread when a sent message starts one. */
-  onSendSuccess?: (messageId: string, threadId: string) => void;
+  onSendSuccess?: (
+    messageId: string,
+    sentThreadId: string,
+    repliedThreadId: string,
+  ) => void;
   /**
    * Set by the reply action. Left unset the composer still opens on its own for
    * a message that already has an AI draft.
@@ -98,6 +110,7 @@ export function ThreadReader({
   onRemoveLabel,
   onBackToInbox,
   onArchive,
+  onMoveToInbox,
   isUnread,
   onMarkRead,
   onMarkUnread,
@@ -114,7 +127,20 @@ export function ThreadReader({
     senderName: string;
   } | null>(null);
   const [readerRef, readerWidth] = useElementWidth();
-  const headerMessage = thread?.messages.at(-1) ?? messages.at(-1);
+  const { emailAccountId } = useAccount();
+  const hiddenDraftMessageIds = useHiddenDraftMessageIds(emailAccountId);
+  const headerMessage =
+    latestShownMessage(thread?.messages ?? [], hiddenDraftMessageIds) ??
+    latestShownMessage(messages, hiddenDraftMessageIds) ??
+    thread?.messages.at(-1) ??
+    messages.at(-1);
+  const translation = useThreadTranslation(
+    emailAccountId,
+    headerMessage?.threadId,
+  );
+  const translatedSubject = translation?.showOriginal
+    ? undefined
+    : translation?.subject;
 
   if (error || (!headerMessage && !localAvailability)) {
     return (
@@ -163,98 +189,95 @@ export function ThreadReader({
       labels={labels}
       menu={menu}
       onArchive={onArchive}
+      onMoveToInbox={onMoveToInbox}
       onMarkRead={onMarkRead}
       onMarkUnread={onMarkUnread}
       onBackToInbox={onBackToInbox}
       onRemoveLabel={onRemoveLabel}
-      subject={headerMessage?.headers.subject ?? "Conversation"}
+      subject={
+        translatedSubject ??
+        getConversationSubject(
+          thread?.messages.length ? thread.messages : messages,
+        ) ??
+        "Conversation"
+      }
     />
   );
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1" ref={readerRef}>
-      {/* White, unlike the list: the reader is its own surface, and it has to
-      match `EmailThread` below or the toolbar reads as a separate band. */}
-      <div
-        className="min-h-0 min-w-0 flex-1 overflow-y-auto bg-card"
-        data-detail-selection-settled={detailSelectionSettled}
-        data-testid="thread-reader"
-      >
-        <div className={readerMeasure({ layout })}>
-          {localAvailability && !localAvailability.providerConfirmed && (
-            <div
-              className="mb-3 flex items-center justify-between gap-3 text-muted-foreground text-sm"
-              role="status"
-            >
-              <span>
-                {localAvailability.refreshing
-                  ? "Checking for more messages…"
-                  : "Showing downloaded messages. This conversation may be incomplete."}
-              </span>
-              <Button
-                size="sm"
-                variant="ghost"
-                disabled={localAvailability.refreshing}
-                onClick={refetch}
-              >
-                Refresh
-              </Button>
-            </div>
-          )}
-          {localAvailability?.hasMore && (
-            <Button
-              className="mb-4"
-              variant="outline"
-              disabled={localAvailability.loadingMore}
-              onClick={() => localAvailability.loadMore()}
-            >
-              {localAvailability.loadingMore
-                ? "Loading messages…"
-                : "Load older downloaded messages"}
-            </Button>
-          )}
-          {messages.length > 0 ? (
-            <EmailThread
-              renderToolbar={renderToolbar}
-              renderMessageMenu={renderMessageMenu}
-              enableMessageNavigation={enableMessageNavigation}
-              autoOpenReplyForMessageId={autoOpenReplyForMessageId}
-              autoOpenForwardForMessageId={autoOpenForwardForMessageId}
-              key={threadId}
-              messages={messages}
-              missingBodyIds={localAvailability?.missingBodyIds}
-              onMarkDone={onArchive}
-              onOpenSenderContext={(message) => {
-                const senderEmail = extractEmailAddress(message.headers.from);
-                setSenderContext({
-                  messageId: message.id,
-                  senderEmail,
-                  senderName:
-                    extractNameFromEmail(message.headers.from) || senderEmail,
-                });
-              }}
-              refetch={refetch}
-              onSendSuccess={onSendSuccess}
-              showReplyButton
-            />
-          ) : (
-            renderToolbar()
-          )}
-        </div>
-      </div>
-
-      {senderContext ? (
-        <SenderContextPanel
-          messageId={senderContext.messageId}
-          onClose={() => setSenderContext(null)}
-          senderEmail={senderContext.senderEmail}
-          senderName={senderContext.senderName}
-          variant={
-            readerWidth >= INLINE_SENDER_CONTEXT_MIN_WIDTH ? "inline" : "sheet"
+    <MailReaderSurface
+      containerRef={readerRef}
+      detailSelectionSettled={detailSelectionSettled}
+      layout={layout}
+      localAvailability={localAvailability}
+      renderLoadMoreButton={({ disabled, loading, onClick }) => (
+        <Button
+          className="mb-4"
+          disabled={disabled}
+          onClick={onClick}
+          variant="outline"
+        >
+          {loading ? "Loading messages…" : "Load older messages"}
+        </Button>
+      )}
+      sidePanel={
+        senderContext ? (
+          <SenderContextPanel
+            messageId={senderContext.messageId}
+            onClose={() => setSenderContext(null)}
+            senderEmail={senderContext.senderEmail}
+            senderName={senderContext.senderName}
+            variant={
+              readerWidth >= INLINE_SENDER_CONTEXT_MIN_WIDTH
+                ? "inline"
+                : "sheet"
+            }
+          />
+        ) : null
+      }
+    >
+      {messages.length > 0 ? (
+        <EmailThread
+          renderToolbar={renderToolbar}
+          renderMessageMenu={renderMessageMenu}
+          enableMessageNavigation={enableMessageNavigation}
+          autoOpenReplyForMessageId={autoOpenReplyForMessageId}
+          autoOpenForwardForMessageId={autoOpenForwardForMessageId}
+          key={threadId}
+          messages={messages}
+          missingBodyIds={localAvailability?.missingBodyIds}
+          outgoing={localAvailability?.outgoing}
+          sendOperationIds={localAvailability?.sendOperationIds}
+          onMarkDone={onArchive}
+          onOpenSenderContext={(message) => {
+            const senderEmail = extractEmailAddress(message.headers.from);
+            setSenderContext({
+              messageId: message.id,
+              senderEmail,
+              senderName:
+                extractNameFromEmail(message.headers.from) || senderEmail,
+            });
+          }}
+          refetch={refetch}
+          onSendSuccess={onSendSuccess}
+          onThreadDiscarded={
+            // A partially loaded conversation can look draft-only, so only
+            // leave once every message is here to say it is.
+            localAvailability?.hasMore ? undefined : onBackToInbox
           }
+          showReplyButton
         />
-      ) : null}
-    </div>
+      ) : (
+        renderToolbar()
+      )}
+      {emailAccountId && threadId && messages.length > 0 && (
+        <PublisherDiscussion
+          key={`${emailAccountId}:${threadId}`}
+          emailAccountId={emailAccountId}
+          threadId={threadId}
+        />
+      )}
+    </MailReaderSurface>
   );
 }
 
@@ -304,8 +327,13 @@ function useElementWidth() {
   return [ref, width] as const;
 }
 
-/** A readable measure, centred whenever the reader owns the full width. */
-function readerMeasure({ layout }: { layout: MailLayoutMode }) {
-  if (layout === "split") return "px-2 pt-4 pb-5 sm:px-6 sm:pt-5";
-  return "mx-auto w-full max-w-[48rem] px-2 pt-4 pb-5 sm:px-6 sm:pt-5";
+// A draft that a pending send stands in for isn't shown, so it doesn't title
+// the thread either.
+function latestShownMessage<T extends { id: string }>(
+  messages: T[],
+  hiddenDraftMessageIds: string[],
+) {
+  return messages.findLast(
+    (message) => !hiddenDraftMessageIds.includes(message.id),
+  );
 }

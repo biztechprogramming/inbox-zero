@@ -1,17 +1,27 @@
 // @vitest-environment jsdom
 
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import type { ReactNode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { ThreadReader } from "@/app/(app)/[emailAccountId]/mail/ThreadReader";
+import type { ThreadMessage } from "@/components/email-list/types";
+import { hideSendingDraftMessages } from "@/hooks/useHiddenDraftMessageIds";
 
 vi.mock("@/env", () => ({
   env: { NEXT_PUBLIC_SUPPORT_EMAIL: "support@example.com" },
 }));
+vi.mock("@/providers/EmailAccountProvider", () => ({
+  useAccount: () => ({ emailAccountId: "account-1" }),
+}));
 vi.mock("@/app/(app)/[emailAccountId]/mail/ReaderToolbar", () => ({
-  ReaderToolbar: () => null,
+  ReaderToolbar: ({ subject }: { subject: string }) => <h1>{subject}</h1>,
 }));
 vi.mock("@/components/email-list/EmailThread", () => ({
-  EmailThread: () => null,
+  EmailThread: ({ renderToolbar }: { renderToolbar: () => ReactNode }) =>
+    renderToolbar(),
+}));
+vi.mock("@/components/team-comments/PublisherDiscussion", () => ({
+  PublisherDiscussion: () => null,
 }));
 
 class MockResizeObserver {
@@ -44,40 +54,34 @@ describe("ThreadReader", () => {
     expect(refetch).toHaveBeenCalledTimes(1);
   });
 
-  it("only warns that downloaded messages may be incomplete until the provider confirms the thread", () => {
-    const localAvailability = {
-      missingBodyIds: new Set<string>(),
-      hasMore: false,
-      loadingMore: false,
-      loadMore: vi.fn(),
-      refreshing: false,
-    };
-    const notice =
-      "Showing downloaded messages. This conversation may be incomplete.";
+  it("titles the thread from its shown messages, not a draft hidden for a pending send", () => {
+    const showDraftAgain = hideSendingDraftMessages("account-1", ["draft-1"]);
+    try {
+      renderReader({
+        refetch: vi.fn(),
+        messages: [
+          createMessage("message-1", "Quarterly plan", ["INBOX"]),
+          createMessage("draft-1", "Re: Quarterly plan", ["DRAFT"]),
+        ],
+      });
 
-    renderReader({
-      localAvailability: { ...localAvailability, providerConfirmed: false },
-      refetch: vi.fn(),
-    });
-    expect(screen.getByText(notice)).toBeTruthy();
-
-    cleanup();
-    renderReader({
-      localAvailability: { ...localAvailability, providerConfirmed: true },
-      refetch: vi.fn(),
-    });
-    expect(screen.queryByText(notice)).toBeNull();
+      expect(
+        screen.getByRole("heading", { name: "Quarterly plan" }),
+      ).toBeTruthy();
+    } finally {
+      showDraftAgain();
+    }
   });
 });
 
 function renderReader({
   error,
-  localAvailability,
   refetch,
+  messages = [],
 }: {
   error?: Parameters<typeof ThreadReader>[0]["error"];
-  localAvailability?: Parameters<typeof ThreadReader>[0]["localAvailability"];
   refetch: () => void;
+  messages?: ThreadMessage[];
 }) {
   return render(
     <ThreadReader
@@ -87,8 +91,7 @@ function renderReader({
       labelHref={() => "/labels"}
       layout="split"
       loading={false}
-      localAvailability={localAvailability}
-      messages={[]}
+      messages={messages}
       onArchive={vi.fn()}
       isUnread={false}
       onMarkRead={vi.fn()}
@@ -100,4 +103,13 @@ function renderReader({
       userLabels={{}}
     />,
   );
+}
+
+function createMessage(id: string, subject: string, labelIds: string[]) {
+  return {
+    id,
+    threadId: "thread-1",
+    labelIds,
+    headers: { subject, from: "sender@example.com", date: "" },
+  } as unknown as ThreadMessage;
 }

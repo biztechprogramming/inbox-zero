@@ -50,10 +50,10 @@ export const EVAL_MODEL_CATALOG: Record<string, EvalModel> = {
     model: "openai/gpt-5.4-mini",
     label: "GPT-5.4 Mini",
   },
-  "gpt-5.6-luna": {
+  "gpt-6-luna": {
     provider: "openrouter",
-    model: "openai/gpt-5.6-luna",
-    label: "GPT-5.6 Luna",
+    model: "openai/gpt-6-luna",
+    label: "GPT-6 Luna",
   },
   "gpt-5.6-terra": {
     provider: "openrouter",
@@ -64,6 +64,11 @@ export const EVAL_MODEL_CATALOG: Record<string, EvalModel> = {
     provider: "openrouter",
     model: "anthropic/claude-sonnet-5",
     label: "Claude Sonnet 5",
+  },
+  "claude-haiku-5.5": {
+    provider: "openrouter",
+    model: "anthropic/claude-haiku-5.5",
+    label: "Claude Haiku 5.5",
   },
   "claude-haiku-4.5": {
     provider: "openrouter",
@@ -105,7 +110,7 @@ export const EVAL_MODEL_CATALOG: Record<string, EvalModel> = {
 /**
  * Returns the list of models to evaluate against.
  *
- * - Not set:                         single run with default env-configured model
+ * - Not set:                         single run with the default model from describeEvalMatrix
  * - EVAL_MODELS=all                  every model in the catalog
  * - EVAL_MODELS=gemini-2.5-flash     single model by shorthand
  * - EVAL_MODELS=gemini-2.5-flash,gpt-5.4-mini   comma-separated shorthand picks

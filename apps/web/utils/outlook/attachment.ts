@@ -12,6 +12,29 @@ export async function getOutlookAttachment(
     .api(`/me/messages/${messageId}/attachments/${attachmentId}`)
     .get();
 
+  if (!attachment.contentBytes && attachment.size !== 0) {
+    const stream = await getOutlookAttachmentStream(
+      client,
+      messageId,
+      attachmentId,
+    );
+    const content = Buffer.from(await new Response(stream).arrayBuffer());
+    // Graph's size includes attachment metadata, so the raw file is usually
+    // smaller. Only an empty or oversized body is a reliable sign of bad data.
+    if (
+      attachment.size &&
+      (content.length === 0 || content.length > attachment.size)
+    ) {
+      throw new Error("Attachment size mismatch");
+    }
+
+    return {
+      ...attachment,
+      contentBytes: content.toString("base64"),
+      size: content.length,
+    };
+  }
+
   return attachment;
 }
 
@@ -33,7 +56,10 @@ export async function getOutlookAttachmentStream(
   if (!response.ok || !response.body || signal?.aborted) {
     await response.body?.cancel().catch(() => undefined);
     signal?.throwIfAborted();
-    throw new Error("Unable to stream attachment");
+    throw Object.assign(new Error("Unable to stream attachment"), {
+      status: response.status,
+      statusCode: response.status,
+    });
   }
   return response.body.pipeThrough(
     new TransformStream<Uint8Array, Uint8Array>(),

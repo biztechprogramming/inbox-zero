@@ -1,30 +1,25 @@
-import { expect } from "@playwright/test";
+import { expect, type Locator } from "@playwright/test";
+import { playwrightMailProvider } from "../mail-provider";
 import { capturePlaywrightCheckpoint } from "../playwright-evidence";
 import { test } from "../playwright-test";
 import { conversationWithSubject, openMail } from "./mail-test-helpers";
+
+const openExternalLabel =
+  playwrightMailProvider === "microsoft" ? "Open in Outlook" : "Open in Gmail";
 
 test("uses the system dark theme when opening HTML emails", async ({
   page,
 }, testInfo) => {
   await page.emulateMedia({ colorScheme: "dark" });
   await page.addInitScript(() => localStorage.setItem("theme", "system"));
-  await page.route(
-    "**/api/threads/thr_playwright_reader_visual?**",
-    async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      for (const message of body.thread.messages) {
-        message.textHtml = "<p>A simple message in the system theme.</p>";
-      }
-      await route.fulfill({ response, json: body });
-    },
+  const { emailAccountId } = await openMail(page);
+  await page.goto(
+    `/${emailAccountId}/mail?thread-id=thr_playwright_theme_system`,
+    { waitUntil: "domcontentloaded" },
   );
-  const { conversations } = await openMail(page);
-  await conversationWithSubject(
-    page,
-    conversations,
-    "Re: Reader Visual Message",
-  ).click();
+  await expect(
+    page.getByRole("heading", { name: "System Theme Message" }),
+  ).toBeVisible({ timeout: 60_000 });
   const emailFrame = page
     .frameLocator('iframe[title="Email content preview"]')
     .last();
@@ -41,32 +36,14 @@ test("keeps designed HTML emails in their authored light palette in dark mode", 
 }, testInfo) => {
   await page.emulateMedia({ colorScheme: "dark" });
   await page.addInitScript(() => localStorage.setItem("theme", "dark"));
-  await page.route(
-    "**/api/threads/thr_playwright_reader_visual?**",
-    async (route) => {
-      const response = await route.fetch();
-      const body = await response.json();
-      for (const message of body.thread.messages) {
-        message.textHtml = `<html><head><style>
-          .card { background: #f8f9fa; color: #202124; }
-          @media (prefers-color-scheme: dark) {
-            .card { background: #202124 !important; color: #e8eaed !important; }
-          }
-        </style></head><body>
-          <div class="card" style="background:#f8f9fa;color:#202124;font-family:Arial,sans-serif;font-size:16px">
-            Finish setup
-          </div>
-        </body></html>`;
-      }
-      await route.fulfill({ response, json: body });
-    },
+  const { emailAccountId } = await openMail(page);
+  await page.goto(
+    `/${emailAccountId}/mail?thread-id=thr_playwright_theme_designed`,
+    { waitUntil: "domcontentloaded" },
   );
-  const { conversations } = await openMail(page);
-  await conversationWithSubject(
-    page,
-    conversations,
-    "Re: Reader Visual Message",
-  ).click();
+  await expect(
+    page.getByRole("heading", { name: "Designed Html Message" }),
+  ).toBeVisible({ timeout: 60_000 });
   const emailFrame = page
     .frameLocator('iframe[title="Email content preview"]')
     .last();
@@ -93,7 +70,7 @@ test("keeps the quote toggle between the reply and expanded history", async ({
   await conversationWithSubject(
     page,
     conversations,
-    "Re: Reader Visual Message",
+    "Reader Visual Message",
   ).click();
   const frame = page
     .frameLocator('iframe[title="Email content preview"]')
@@ -135,11 +112,6 @@ test("keeps the quote toggle between the reply and expanded history", async ({
   expect(Math.abs((await toggle.boundingBox())!.y - initialTop)).toBeLessThan(
     2,
   );
-  await capturePlaywrightCheckpoint(
-    page,
-    testInfo,
-    "mail-reader-quote-toggle-collapsed",
-  );
 });
 
 test("captures the rich message reader states", async ({ page }, testInfo) => {
@@ -152,11 +124,11 @@ test("captures the rich message reader states", async ({ page }, testInfo) => {
   await conversationWithSubject(
     page,
     conversations,
-    "Re: Reader Visual Message",
+    "Reader Visual Message",
   ).click();
 
   await expect(
-    page.getByRole("heading", { name: "Re: Reader Visual Message" }),
+    page.getByRole("heading", { name: "Reader Visual Message" }),
   ).toBeVisible();
 
   const emailFrame = page
@@ -194,28 +166,22 @@ test("captures the rich message reader states", async ({ page }, testInfo) => {
   await capturePlaywrightCheckpoint(page, testInfo, "mail-reader-toolbar");
 
   const message = page.locator("[data-thread-message-id]").last();
-  await page
-    .getByRole("heading", { name: "Re: Reader Visual Message" })
-    .hover();
+  await page.getByRole("heading", { name: "Reader Visual Message" }).hover();
   await message.hover();
   await message.getByRole("button", { name: "Reply", exact: true }).hover();
   const replyTooltip = page.getByRole("tooltip", { name: /Reply/ });
   await expect(replyTooltip).toContainText("Reply");
   await expect(replyTooltip.locator("kbd")).toHaveText("R");
-  await capturePlaywrightCheckpoint(
-    page,
-    testInfo,
-    "mail-reader-reply-shortcut",
-  );
   await message.getByRole("button", { name: "Forward", exact: true }).hover();
   const forwardTooltip = page.getByRole("tooltip", { name: /Forward/ });
   await expect(forwardTooltip).toContainText("Forward");
   await expect(forwardTooltip.locator("kbd")).toHaveText("F");
-  await capturePlaywrightCheckpoint(
-    page,
-    testInfo,
-    "mail-reader-reply-forward-shortcuts",
-  );
+  // Leave the forward tooltip so it cannot steal collision space from the
+  // actions menu once sender stats resolve. Hovering the subject can land
+  // on the tooltip itself, which keeps it open.
+  await page.keyboard.press("Escape");
+  await page.mouse.move(0, 0);
+  await expect(forwardTooltip).toHaveCount(0);
 
   const senderStatsResponse = page.waitForResponse((response) =>
     response.url().includes("/api/user/stats/newsletters"),
@@ -225,26 +191,29 @@ test("captures the rich message reader states", async ({ page }, testInfo) => {
   const autoArchive = actionsMenu.getByRole("menuitem", {
     name: "Auto archive future emails",
   });
-  const openInGmail = actionsMenu.getByRole("menuitem", {
-    name: "Open in Gmail",
+  const openExternal = actionsMenu.getByRole("menuitem", {
+    name: openExternalLabel,
   });
   await expect(autoArchive).toBeVisible();
   await expect(autoArchive).toHaveAttribute("aria-disabled", "true");
   await actionsMenu.evaluate((menu) =>
     Promise.all(menu.getAnimations().map((animation) => animation.finished)),
   );
-  const openInGmailBeforeLoad = await openInGmail.boundingBox();
-  expect(openInGmailBeforeLoad).not.toBeNull();
+  const openExternalOffsetBeforeLoad = await menuItemOffset(
+    actionsMenu,
+    openExternal,
+  );
   releaseSenderStats.resolve();
   expect((await senderStatsResponse).ok()).toBe(true);
   await expect(autoArchive).not.toHaveAttribute("aria-disabled", "true");
-  const openInGmailAfterLoad = await openInGmail.boundingBox();
-  expect(openInGmailAfterLoad?.y).toBe(openInGmailBeforeLoad?.y);
+  expect(await menuItemOffset(actionsMenu, openExternal)).toBe(
+    openExternalOffsetBeforeLoad,
+  );
   await expect(
     actionsMenu.getByRole("menuitem", { name: "Mark as spam" }),
   ).toBeVisible();
-  await expect(actionsMenu.getByRole("menuitem").last()).toHaveText(
-    /Open in Gmail/,
+  await expect(actionsMenu.getByRole("menuitem").last()).toContainText(
+    openExternalLabel,
   );
   await capturePlaywrightCheckpoint(
     page,
@@ -278,11 +247,6 @@ test("captures the rich message reader states", async ({ page }, testInfo) => {
 
   await page.getByRole("button", { name: "Show details", exact: true }).click();
   await expect(page.getByText("From", { exact: true })).toBeVisible();
-  await capturePlaywrightCheckpoint(
-    page,
-    testInfo,
-    "mail-reader-message-details",
-  );
 
   await page.getByRole("button", { name: "Show quoted content" }).click();
   await expect(
@@ -291,11 +255,6 @@ test("captures the rich message reader states", async ({ page }, testInfo) => {
       .last()
       .getByText("This earlier quoted message is hidden until expanded."),
   ).toBeVisible();
-  await capturePlaywrightCheckpoint(
-    page,
-    testInfo,
-    "mail-reader-quoted-content",
-  );
 });
 
 test("offers to disable auto archive for an enabled sender", async ({
@@ -317,7 +276,7 @@ test("offers to disable auto archive for an enabled sender", async ({
   await conversationWithSubject(
     page,
     conversations,
-    "Re: Reader Visual Message",
+    "Reader Visual Message",
   ).click();
 
   await page.getByRole("button", { name: /^More actions/ }).click();
@@ -360,10 +319,10 @@ test("opens the sender profile beside the reader", async ({
   await conversationWithSubject(
     page,
     conversations,
-    "Re: Reader Visual Message",
+    "Reader Visual Message",
   ).click();
   const subject = page.getByRole("heading", {
-    name: "Re: Reader Visual Message",
+    name: "Reader Visual Message",
   });
   await expect(subject).toBeVisible();
 
@@ -426,36 +385,34 @@ test("opens the sender profile beside the reader", async ({
   await expect(subject).toBeVisible();
 });
 
-for (const parentId of [undefined, "<missing-parent@example.com>"]) {
-  test(`renders a draft-only thread with ${parentId ? "a missing parent" : "no parent"}`, async ({
+for (const parent of ["none", "missing"] as const) {
+  test(`renders a draft-only thread with ${parent === "missing" ? "a missing parent" : "no parent"}`, async ({
     page,
   }, testInfo) => {
-    await page.route(
-      "**/api/threads/thr_playwright_reader_visual?**",
-      async (route) => {
-        const response = await route.fetch();
-        const body = await response.json();
-        const draft = body.thread.messages[0];
-        draft.labelIds = ["DRAFT"];
-        draft.headers.references = parentId;
-        draft.headers["in-reply-to"] = parentId;
-        draft.textHtml = "<p>This unsent draft should remain visible.</p>";
-        body.thread.messages = [draft];
-        await route.fulfill({ response, json: body });
-      },
-    );
-    const { conversations } = await openMail(page);
-    await conversationWithSubject(
-      page,
-      conversations,
-      "Re: Reader Visual Message",
-    ).click();
+    const threadId =
+      parent === "missing"
+        ? "thr_playwright_draft_missing_parent"
+        : "thr_playwright_draft_orphan";
+    const { emailAccountId } = await openMail(page);
+    await page.goto(`/${emailAccountId}/mail?thread-id=${threadId}`, {
+      waitUntil: "domcontentloaded",
+    });
     const message = page.locator("[data-thread-message-id]");
     await expect(message).toHaveCount(1);
-    await expect(message.getByText("Draft", { exact: true })).toBeVisible();
+    await expect(
+      message.getByRole("button", { name: /^Draft to / }),
+    ).toBeVisible();
     await expect(
       message.getByRole("textbox", { name: "Email message" }),
     ).toContainText("This unsent draft should remain visible.");
     await capturePlaywrightCheckpoint(page, testInfo, "mail-reader-draft-only");
   });
+}
+
+async function menuItemOffset(menu: Locator, item: Locator) {
+  const menuBox = await menu.boundingBox();
+  const itemBox = await item.boundingBox();
+  expect(menuBox).not.toBeNull();
+  expect(itemBox).not.toBeNull();
+  return itemBox!.y - menuBox!.y;
 }

@@ -635,7 +635,7 @@ function EmailPreview({
   if (error) {
     return (
       <div className="px-3 py-2 text-xs text-muted-foreground">
-        Could not load email content: {error.message}
+        Could not load email content: {error.error}
       </div>
     );
   }
@@ -658,6 +658,8 @@ function EmailPreview({
     >
       {lastMessage.textHtml ? (
         <HtmlEmail
+          // A newer message is a different email, not an update of this one.
+          key={lastMessage.id}
           emailAccountId={emailAccountId}
           html={lastMessage.textHtml}
           inlineAttachments={lastMessage.inline}

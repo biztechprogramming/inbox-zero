@@ -116,7 +116,7 @@ function DeliveryTimePicker({
         if (!nextOpen) setShowCustom(false);
       }}
     >
-      <Tooltip shortcuts={[shortcut]}>
+      <Tooltip shortcuts={[shortcut]} showShortcutLabels={!!value}>
         <PopoverTrigger asChild>
           <Button
             type="button"
@@ -178,9 +178,11 @@ function DeliveryTimePicker({
           </div>
         ) : (
           <>
-            <p className="px-2 py-2 text-xs font-medium text-muted-foreground">
-              {isReminder ? "Remind me if no reply" : label}
-            </p>
+            {isReminder && (
+              <p className="px-2 py-2 text-xs font-medium text-muted-foreground">
+                Remind me if no reply
+              </p>
+            )}
             {[1, 2, 7].map((days) => {
               const date = new Date(earliest);
               date.setDate(date.getDate() + days);

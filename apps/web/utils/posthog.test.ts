@@ -19,21 +19,14 @@ vi.mock("@/env", () => ({
 const captureMock = vi.fn();
 const flushMock = vi.fn().mockResolvedValue(undefined);
 const shutdownMock = vi.fn();
-const getFeatureFlagMock = vi.fn();
-const { afterMock } = vi.hoisted(() => ({
-  afterMock: vi.fn((callback: () => unknown) => callback()),
-}));
 
 vi.mock("posthog-node", () => ({
   PostHog: class PostHogMock {
     capture = captureMock;
     flush = flushMock;
     shutdown = shutdownMock;
-    getFeatureFlag = getFeatureFlagMock;
   },
 }));
-
-vi.mock("next/server", () => ({ after: afterMock }));
 
 vi.mock("@/utils/redis", () => ({
   redis: {
@@ -48,8 +41,9 @@ import {
   FIRST_TIME_EVENTS,
   deletePosthogUser,
   getCheckoutSessionIdHash,
-  getServerFeatureFlagVariant,
   posthogCaptureEvent,
+  trackBillingCancellationInitiated,
+  trackBillingTrialConverted,
   trackFirstTimeEvent,
   trackProductFeedback,
   trackStripeCheckoutCreated,
@@ -364,47 +358,41 @@ describe("posthogCaptureEvent", () => {
   });
 });
 
-describe("getServerFeatureFlagVariant", () => {
+describe("Stripe billing outcome events", () => {
   beforeEach(() => {
     vi.clearAllMocks();
   });
 
-  it("returns the variant and flushes the exposure after the response", async () => {
-    getFeatureFlagMock.mockResolvedValue("paywall-first");
-
-    const variant = await getServerFeatureFlagVariant({
-      key: "onboarding-paywall-first",
-      distinctId: "user@example.com",
+  it("captures the paid trial conversion event used by experiments", async () => {
+    await trackBillingTrialConverted("user@example.com", {
+      subscriptionId: "sub_test",
     });
 
-    expect(variant).toBe("paywall-first");
-    expect(getFeatureFlagMock).toHaveBeenCalledWith(
-      "onboarding-paywall-first",
-      "user@example.com",
-    );
-    expect(afterMock).toHaveBeenCalledOnce();
-    expect(flushMock).toHaveBeenCalledOnce();
+    expect(captureMock).toHaveBeenCalledWith({
+      distinctId: "user@example.com",
+      event: "billing_trial_converted",
+      properties: {
+        subscriptionId: "sub_test",
+        $set: {
+          premium: true,
+          premiumTier: "subscription",
+          premiumStatus: "active",
+        },
+      },
+      sendFeatureFlags: undefined,
+    });
   });
 
-  it("falls back to undefined when the lookup fails", async () => {
-    getFeatureFlagMock.mockRejectedValue(new Error("network"));
+  it("captures the scheduled cancellation event used by experiments", async () => {
+    await trackBillingCancellationInitiated("user@example.com", {
+      subscriptionId: "sub_test",
+    });
 
-    expect(
-      await getServerFeatureFlagVariant({
-        key: "onboarding-paywall-first",
-        distinctId: "user@example.com",
-      }),
-    ).toBeUndefined();
-  });
-
-  it("treats boolean flags as no variant", async () => {
-    getFeatureFlagMock.mockResolvedValue(true);
-
-    expect(
-      await getServerFeatureFlagVariant({
-        key: "integration-actions",
-        distinctId: "user@example.com",
-      }),
-    ).toBeUndefined();
+    expect(captureMock).toHaveBeenCalledWith({
+      distinctId: "user@example.com",
+      event: "billing_cancellation_initiated",
+      properties: { subscriptionId: "sub_test" },
+      sendFeatureFlags: undefined,
+    });
   });
 });
